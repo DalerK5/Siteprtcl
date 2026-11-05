@@ -28,7 +28,8 @@ warnings.filterwarnings("ignore")
 JOURNAL_SHEET = "НЕОПРЕДЕЛ"
 JCOL = "E"                     # колонка замеров на листе журнала
 TEMPLATE_NAME = "template.xlsx"
-PROTO_REF = ("48-04", "F1")    # «Приложение к протоколу №…» (на него ссылаются все расчётные листы)
+PROTO_REF = ("48-04", "F1")
+ID_REF = "E1"                  # «ID №…» на листе журнала = название PDF-файла    # «Приложение к протоколу №…» (на него ссылаются все расчётные листы)
 
 # --------------------------------------------------------------------------
 # Раскладка журнала (лист «НЕОПРЕДЕЛ»): ключ -> (подпись, первая строка тройки)
@@ -1173,6 +1174,8 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
             ("D8", "%s m/s" % num_or_text(meta["wind"]) if meta["wind"] is not None else ""),
             ("D10", meta["brand"]), ("D11", meta["model"]), ("D12", meta["category"]),
             ("D14", meta["vin"])]
+    if meta.get("id"):
+        head.append((ID_REF, "ID № %s" % meta["id"]))
     for ref, v in head:
         if v and v.strip():
             j, ok = set_str(j, ref, v)
@@ -1267,11 +1270,12 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
     return pack_out(zin, out), log
 
 
-def process(pdf_bytes, template_bytes, mode="meas"):
+def process(pdf_bytes, template_bytes, mode="meas", file_id=""):
     raw = pdf_text(pdf_bytes)
     if "Aniqlanayotgan parametr nomi" not in raw:
         raise ValueError("В PDF не найден текст протокола (возможно, это скан без текстового слоя).")
     meta = parse_meta(raw)
+    meta["id"] = (file_id or "").strip()
     params = parse_params(raw)
     if not params:
         raise ValueError("В протоколе не удалось найти таблицы результатов.")
@@ -1286,6 +1290,13 @@ def process(pdf_bytes, template_bytes, mode="meas"):
     log["nonconf"] = [p["name"] for p in params if any(r["concl"] != "M" for r in p["rows"])]
     log["notes"] = [(v["name"], n) for v in values.values() for n in v["notes"]]
     return data, meta, log
+
+
+def id_from_filename(fname):
+    """ID = название PDF-файла: «1901093.pdf», «1901093 (1).pdf» -> «1901093»."""
+    stem = Path(fname or "").stem
+    m = re.search(r"\d{4,}", stem)
+    return m.group(0) if m else stem.strip()
 
 
 def safe_name(s):
@@ -1324,13 +1335,17 @@ def main():
             st.radio("С протоколом совпадает:", list(MODES), key="mode")
 
     pdf = st.file_uploader("PDF-протокол испытаний", type=["pdf"], key="pdf")
+    file_id = ""
+    if pdf is not None:
+        file_id = st.text_input("ID (берётся из названия файла)", value=id_from_filename(pdf.name),
+                                key="id_" + pdf.name)
 
     if st.button("Заполнить журнал", type="primary", use_container_width=True,
                  disabled=(pdf is None or template_bytes is None)):
         try:
             mode = MODES.get(st.session_state.get("mode"), "meas")
             with st.spinner("Обработка протокола…"):
-                data, meta, log = process(pdf.getvalue(), template_bytes, mode)
+                data, meta, log = process(pdf.getvalue(), template_bytes, mode, file_id)
             st.session_state["res"] = (data, meta, log, pdf.name)
         except Exception as e:  # noqa: BLE001
             st.session_state.pop("res", None)
@@ -1347,7 +1362,10 @@ def main():
     data, meta, log, pdf_name = res
 
     st.success("Журнал готов")
-    name = "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
+    if meta.get("id"):
+        name = "%s.xlsx" % safe_name(meta["id"])
+    else:
+        name = "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
     st.download_button(
         "⬇️ Скачать журнал (.xlsx)", data=data, file_name=name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1357,9 +1375,9 @@ def main():
     d = meta["date"]
     st.subheader("Реквизиты")
     st.markdown(
-        "- **Протокол:** %s\n- **Марка / модель:** %s / %s\n- **Категория:** %s\n- **VIN:** %s\n"
+        "- **ID:** %s\n- **Протокол:** %s\n- **Марка / модель:** %s / %s\n- **Категория:** %s\n- **VIN:** %s\n"
         "- **Дата испытаний:** %s\n- **Условия:** %s °C, %s %%, %s кПа, %s м/с" % (
-            meta["protocol"] or "—", meta["brand"] or "—", meta["model"] or "—", meta["category"] or "—",
+            meta.get("id") or "—", meta["protocol"] or "—", meta["brand"] or "—", meta["model"] or "—", meta["category"] or "—",
             meta["vin"] or "—", d.strftime("%d.%m.%Y") if d else "—",
             meta["temp"], meta["hum"], meta["press"], meta["wind"]))
     if len(meta.get("vins", [])) > 1:
