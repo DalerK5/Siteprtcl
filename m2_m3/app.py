@@ -1576,6 +1576,62 @@ MODES = {"«СР.ЗАНЧ» (среднее с поправкой Og'ish) = пр
          "Среднее самих замеров = протоколу (без поправки)": "meas"}
 
 
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def out_name(meta):
+    if meta.get("id"):
+        return "%s.xlsx" % safe_name(meta["id"])
+    return "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
+
+
+def problems(meta, log):
+    """Короткий список того, что требует внимания (для сводки)."""
+    res = []
+    if log["verify_bad"] or log.get("unlinked"):
+        res.append("среднее не сошлось")
+    if log.get("u_bad"):
+        res.append("U не сошлась: %d" % len(log["u_bad"]))
+    if not log["calc"]:
+        res.append("формулы не посчитаны")
+    if log["nonconf"]:
+        res.append("есть N в протоколе")
+    if log.get("suspect"):
+        res.append("нераспознанные огни")
+    if not meta["brand"] or not meta["model"]:
+        res.append("нет марки/модели")
+    if log["notes"]:
+        res.append("расхождения в протоколе: %d" % len(log["notes"]))
+    if log.get("ub_changed"):
+        res.append("UB изменена: %d" % len(log["ub_changed"]))
+    return res
+
+
+def unique_ids(names):
+    ids, seen = [], {}
+    for nm in names:
+        i = id_from_filename(nm) or "file"
+        seen[i] = seen.get(i, 0) + 1
+        ids.append(i if seen[i] == 1 else "%s_%d" % (i, seen[i]))
+    return ids
+
+
+def make_zip(results):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        used = set()
+        for r in results:
+            if r["data"] is None:
+                continue
+            nm = out_name(r["meta"])
+            base, n = nm[:-5], 2
+            while nm in used:
+                nm, n = "%s_%d.xlsx" % (base, n), n + 1
+            used.add(nm)
+            z.writestr(nm, r["data"])
+    return buf.getvalue()
+
+
 def main():
     st.set_page_config(page_title="Журнал M2–M3", page_icon="🚌", layout="centered")
     st.markdown(
@@ -1584,7 +1640,8 @@ def main():
         unsafe_allow_html=True,
     )
     st.title("🚌 Журнал испытаний M2–M3")
-    st.caption("Автобусы и микроавтобусы. Загрузите PDF-протокол — получите заполненный журнал по шаблону.")
+    st.caption("Автобусы и микроавтобусы. Загрузите один или сразу несколько PDF-протоколов — "
+               "получите заполненные журналы по шаблону.")
 
     tpl_path = Path(__file__).resolve().parent / TEMPLATE_NAME
     template_bytes = tpl_path.read_bytes() if tpl_path.exists() else None
@@ -1600,44 +1657,79 @@ def main():
                 template_bytes = up_t.getvalue()
             st.radio("С протоколом совпадает:", list(MODES), key="mode")
 
-    pdf = st.file_uploader("PDF-протокол испытаний", type=["pdf"], key="pdf")
-    file_id = ""
-    if pdf is not None:
-        file_id = st.text_input("ID (берётся из названия файла)", value=id_from_filename(pdf.name),
-                                key="id_" + pdf.name)
+    pdfs = st.file_uploader("PDF-протоколы испытаний (можно несколько)", type=["pdf"],
+                            accept_multiple_files=True, key="pdfs") or []
+    ids = unique_ids([f.name for f in pdfs])
+    if len(pdfs) == 1:
+        ids[0] = st.text_input("ID (берётся из названия файла)", value=ids[0], key="id_" + pdfs[0].name)
+    elif pdfs:
+        st.caption("ID берутся из названий файлов: " + ", ".join(ids))
 
-    if st.button("Заполнить журнал", type="primary", use_container_width=True,
-                 disabled=(pdf is None or template_bytes is None)):
-        try:
-            mode = MODES.get(st.session_state.get("mode"), "corr")
-            with st.spinner("Обработка протокола…"):
-                data, meta, log = process(pdf.getvalue(), template_bytes, mode, file_id)
-            st.session_state["res"] = (data, meta, log, pdf.name)
-        except Exception as e:  # noqa: BLE001
-            st.session_state.pop("res", None)
-            st.error("Не удалось обработать файл: %s" % e)
+    label = "Заполнить журнал" if len(pdfs) <= 1 else "Заполнить журналы (%d)" % len(pdfs)
+    if st.button(label, type="primary", use_container_width=True,
+                 disabled=(not pdfs or template_bytes is None)):
+        mode = MODES.get(st.session_state.get("mode"), "corr")
+        results = []
+        bar = st.progress(0.0, text="Обработка…")
+        for n, (f, fid) in enumerate(zip(pdfs, ids)):
+            bar.progress(n / len(pdfs), text="Обработка %d из %d: %s" % (n + 1, len(pdfs), f.name))
+            try:
+                data, meta, log = process(f.getvalue(), template_bytes, mode, fid)
+                results.append({"name": f.name, "data": data, "meta": meta, "log": log, "err": None})
+            except Exception as e:  # noqa: BLE001
+                results.append({"name": f.name, "data": None, "meta": None, "log": None, "err": str(e)})
+        bar.empty()
+        st.session_state["batch"] = results
 
     if template_bytes is None:
         st.info("Положите template.xlsx рядом с app.py или загрузите шаблон выше.")
-    elif pdf is None:
-        st.info("Загрузите PDF-протокол.")
+    elif not pdfs:
+        st.info("Загрузите PDF-протокол(ы).")
 
-    res = st.session_state.get("res")
-    if not res:
+    results = st.session_state.get("batch")
+    if not results:
         return
-    data, meta, log, pdf_name = res
+    ok = [r for r in results if r["data"] is not None]
 
-    st.success("Журнал готов")
-    if meta.get("id"):
-        name = "%s.xlsx" % safe_name(meta["id"])
-    else:
-        name = "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
-    st.download_button(
-        "⬇️ Скачать журнал (.xlsx)", data=data, file_name=name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    if len(results) == 1:
+        r = results[0]
+        if r["err"]:
+            st.error("Не удалось обработать файл: %s" % r["err"])
+            return
+        st.success("Журнал готов")
+        st.download_button("⬇️ Скачать журнал (.xlsx)", data=r["data"], file_name=out_name(r["meta"]),
+                           mime=XLSX_MIME, use_container_width=True)
+        show_details(r["meta"], r["log"])
+        return
 
+    st.success("Готово: %d из %d" % (len(ok), len(results)))
+    if ok:
+        st.download_button("⬇️ Скачать все журналы (.zip, %d)" % len(ok), data=make_zip(results),
+                           file_name="Журналы_M2M3.zip", mime="application/zip", use_container_width=True)
+    st.subheader("Сводка")
+    for n, r in enumerate(results):
+        if r["err"]:
+            st.error("❌ **%s** — не обработан: %s" % (r["name"], r["err"]))
+            continue
+        meta, log = r["meta"], r["log"]
+        pr = problems(meta, log)
+        line = "**%s** — %s %s · заполнено %d · U совпала %d/%d" % (
+            meta.get("id") or r["name"], meta["brand"] or "?", meta["model"] or "?", len(log["filled"]),
+            sum(1 for x in log.get("u_fit", []) if x[4]), len(log.get("u_fit", [])))
+        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки")) for x in pr)
+        (st.warning if hard else st.success)(("⚠️ " if hard else "✅ ") + line +
+                                             ("\n\n" + "; ".join(pr) if pr else ""))
+        st.download_button("⬇️ %s" % out_name(meta), data=r["data"], file_name=out_name(meta),
+                           mime=XLSX_MIME, use_container_width=True, key="dl_%d" % n)
+
+    if ok:
+        st.subheader("Подробности")
+        names = [(r["meta"].get("id") or r["name"]) for r in ok]
+        pick = st.selectbox("Файл", list(range(len(ok))), format_func=lambda i: names[i])
+        show_details(ok[pick]["meta"], ok[pick]["log"])
+
+
+def show_details(meta, log):
     d = meta["date"]
     st.subheader("Реквизиты")
     st.markdown(
