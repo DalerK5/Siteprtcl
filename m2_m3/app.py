@@ -1279,7 +1279,7 @@ def num_or_text(v):
     return fmt(D(v)) if v is not None else ""
 
 
-def fill_workbook(template_bytes, meta, values, mode="meas"):
+def fill_workbook(template_bytes, meta, values, mode="corr"):
     """mode: "meas" — среднее тройки = протоколу (как в шаблоне);
              "corr" — «СР.ЗАНЧ» (с поправкой Og'ish) = протоколу."""
     tcells = load_cells(template_bytes)
@@ -1456,7 +1456,7 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
     return pack_out(zin, out), log
 
 
-def process(pdf_bytes, template_bytes, mode="meas", file_id=""):
+def process(pdf_bytes, template_bytes, mode="corr", file_id=""):
     raw = pdf_text(pdf_bytes)
     if "Aniqlanayotgan parametr nomi" not in raw:
         raise ValueError("В PDF не найден текст протокола (возможно, это скан без текстового слоя).")
@@ -1492,8 +1492,8 @@ def safe_name(s):
 # --------------------------------------------------------------------------
 # Интерфейс Streamlit
 # --------------------------------------------------------------------------
-MODES = {"По замерам: среднее тройки = протоколу (как в шаблоне)": "meas",
-         "По «СР.ЗАНЧ»: среднее с поправкой Og'ish = протоколу": "corr"}
+MODES = {"«СР.ЗАНЧ» (среднее с поправкой Og'ish) = протоколу": "corr",
+         "Среднее самих замеров = протоколу (без поправки)": "meas"}
 
 
 def main():
@@ -1529,7 +1529,7 @@ def main():
     if st.button("Заполнить журнал", type="primary", use_container_width=True,
                  disabled=(pdf is None or template_bytes is None)):
         try:
-            mode = MODES.get(st.session_state.get("mode"), "meas")
+            mode = MODES.get(st.session_state.get("mode"), "corr")
             with st.spinner("Обработка протокола…"):
                 data, meta, log = process(pdf.getvalue(), template_bytes, mode, file_id)
             st.session_state["res"] = (data, meta, log, pdf.name)
