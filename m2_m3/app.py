@@ -7,13 +7,14 @@
 Зависимости: streamlit, openpyxl, pypdf
 """
 import io
+import functools
 import itertools
 import math
 import re
 import zipfile
 import warnings
 from datetime import date
-from decimal import Decimal as D, InvalidOperation
+from decimal import Decimal as D, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction as Fr
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -274,7 +275,10 @@ def parse_params(raw):
                 continue
             toks = mm.group(2).split()
             if len(toks) >= 3 and re.fullmatch(r"-?[\d.,]+", toks[0]) and re.fullmatch(r"-?[\d.,]+", toks[-2]):
-                rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3)})
+                nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]\d+)?,?", t)]
+                unc = nums[1] if len(nums) >= 3 else None
+                rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3),
+                             "unc": unc})
         if not rows:
             continue
         params.append({"section": fold(section), "name": name, "raw_l": name.lower(),
@@ -304,6 +308,17 @@ def row_value(row, req):
     if cf is True and cm is False:
         return f, decimals_of(row["final"]), "измерено %s, в итоге %s — взято итоговое" % (row["meas"], row["final"])
     return m, decimals_of(row["meas"]), "измерено %s, в итоге %s — взято измеренное" % (row["meas"], row["final"])
+
+
+def param_unc(p):
+    """Неопределённость из протокола: (Decimal, знаков) или (None, 0)."""
+    for r in p["rows"]:
+        if r.get("unc"):
+            try:
+                return to_dec(r["unc"]), decimals_of(r["unc"])
+            except (InvalidOperation, ValueError):
+                pass
+    return None, 0
 
 
 def param_value(p):
@@ -561,17 +576,19 @@ def map_params(params):
             trace.append((p, None))
             continue
         unit = p["rows"][0]["unit"].lower()
+        unc, unc_dp = param_unc(p)
         if key in DIM_KEYS and (unit in ("m", "м") or v < 100):
+            if unc is not None:
+                unc, unc_dp = unc * 1000, max(unc_dp - 3, 0)
             v, dp = v * 1000, max(dp - 3, 0)          # m -> mm (в журнале габариты в mm)
             v = v.quantize(D(1).scaleb(-dp))
             notes = notes + ["переведено из m в mm: %s" % fmt(v)]
-        if key == "first_aid" and unit not in ("mm", "мм"):
-            notes = notes + ["в протоколе единица «%s», в журнале — mm" % p["rows"][0]["unit"]]
         if p.get("_guess"):
             notes = notes + ["в протоколе нет названия огня — по порядку пунктов отнесено к «%s»"
                              % LAMPS[p["_guess"]][0]]
         ok = all(r["concl"] == "M" for r in p["rows"])
-        values[key] = {"value": v, "dp": dp, "ok": ok, "name": p["name"], "notes": notes}
+        values[key] = {"value": v, "dp": dp, "ok": ok, "name": p["name"], "notes": notes,
+                       "unc": unc, "unc_dp": unc_dp}
         trace.append((p, key))
     return values, unmatched, dup, trace
 
@@ -637,6 +654,92 @@ def gen_triplet(seed, P, dp):
     if min(new) < 0 <= P:
         return [P, P, P], True
     return new, True
+
+
+@functools.lru_cache(maxsize=None)
+def _t95(df):
+    return t_inv_2t(0.05, df)
+
+
+def u_of_s(s, ub):
+    """Расширенная неопределённость по формулам шаблона:
+    UA=STDEVA/√3, u=√(UA²+UB²), veff=u⁴/(UA⁴/2), U=TINV(0.05;veff)·u."""
+    if s <= 0:
+        return None
+    ua = s / math.sqrt(3.0)
+    uu = math.sqrt(ua * ua + ub * ub)
+    veff = uu ** 4 / (ua ** 4 / 2.0)
+    df = int(min(veff, 1e7))
+    if df < 1:
+        return None
+    return _t95(df) * uu
+
+
+def _round_eq(x, target, nd):
+    q = D(1).scaleb(-nd)
+    return D(repr(x)).quantize(q, rounding=ROUND_HALF_UP) == target.quantize(q)
+
+
+def fit_u_triplet(seed, center, dp, unc, unc_dp, ub):
+    """Тройка со средним РОВНО center и неопределённостью U, которая после округления
+    до unc_dp знаков равна unc (как в протоколе). Характер (порядок) разброса — из шаблона.
+    -> (тройка, добавлено_знаков, ok)"""
+    target = float(unc)
+    lo_u = u_of_s(1e-12, ub) or 0.0
+    lo, hi = 1e-12, max(target, 1e-6)
+    while (u_of_s(hi, ub) or 0) < target and hi < 1e12:
+        hi *= 2.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if (u_of_s(mid, ub) or 0) < target:
+            lo = mid
+        else:
+            hi = mid
+    s_t = hi
+    if seed and all(x is not None for x in seed) and len(set(seed)) > 1:
+        m = sum(float(x) for x in seed) / 3.0
+        e = [float(x) - m for x in seed]
+    else:
+        e = [1.0, 0.0, -1.0]
+    se = math.sqrt(sum(x * x for x in e) / 2.0)
+    e = [x / se for x in e]
+    seed_sign = [_sgn(e[i] - e[j]) for i, j in ((0, 1), (0, 2), (1, 2))]
+    best_any = None
+    for k in range(dp, dp + 5):
+        q = 10.0 ** -k
+        scale = s_t / q
+        if scale < 0.5:
+            continue
+        n0, n1 = round(e[0] * scale), round(e[1] * scale)
+        r = int(min(40, max(3, 0.08 * scale + 3)))
+        found = None
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                n = (n0 + dx, n1 + dy, -(n0 + dx + n1 + dy))
+                if n[0] == n[1] == n[2]:
+                    continue
+                mn = sum(n) / 3.0
+                s = q * math.sqrt(sum((x - mn) ** 2 for x in n) / 2.0)
+                u = u_of_s(s, ub)
+                if u is None:
+                    continue
+                vals = [center + D(x).scaleb(-k) for x in n]
+                if min(vals) < 0 <= center:
+                    continue
+                ch = sum(_sgn(n[i] - n[j]) != seed_sign[t] for t, (i, j) in enumerate(((0, 1), (0, 2), (1, 2))))
+                dist = abs(u - target)
+                if best_any is None or dist < best_any[0]:
+                    best_any = (dist, vals, k)
+                if _round_eq(u, unc, unc_dp):
+                    safe = dist <= 0.3 * 10.0 ** -unc_dp
+                    cost = (not safe, ch, dist)
+                    if found is None or cost < found[0]:
+                        found = (cost, vals)
+        if found:
+            return found[1], k - dp, True
+    if best_any:
+        return best_any[1], best_any[2] - dp, False
+    return None, 0, target >= lo_u
 
 
 def fmt(x):
@@ -1134,6 +1237,31 @@ def block_bias(book, row):
         return None
 
 
+def block_ub(cells, book, row):
+    """UB блока: F[r] -> лист!U (=t*u) -> u (=SQRT(UA^2+UB^2)) -> UB. None — цепочка нестандартная."""
+    try:
+        f = cells[JOURNAL_SHEET].get("F%d" % row)
+        m = re.fullmatch(r"='?((?:[^']|'')+?)'?!\$?([A-Z]+)\$?(\d+)", f or "")
+        if not m:
+            return None
+        sh = m.group(1).replace("''", "'")
+        uc = cells[sh].get(m.group(2) + m.group(3))
+        mm = re.fullmatch(r"=([A-Z]+\d+)\*([A-Z]+\d+)", uc or "")
+        if not mm:
+            return None
+        tf, uf = cells[sh].get(mm.group(1)), cells[sh].get(mm.group(2))
+        m3 = re.fullmatch(r"=SQRT\(([A-Z]+\d+)\^2\+([A-Z]+\d+)\^2\)", uf or "")
+        mt = re.fullmatch(r"=TINV\(0\.05,([A-Z]+\d+)\)", tf or "")
+        if not (m3 and mt):
+            return None
+        if not re.fullmatch(r"=STDEVA\([A-Z]+\d+:[A-Z]+\d+\)/SQRT\(3\)", cells[sh].get(m3.group(1)) or ""):
+            return None
+        ub = book.value(sh, m3.group(2))
+        return float(ub) if isinstance(ub, (int, float)) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def num_or_text(v):
     return fmt(D(v)) if v is not None else ""
 
@@ -1157,9 +1285,10 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
             vals.append(D(repr(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else None)
         seeds[key] = vals
         bias[key] = block_bias(tbook, row)
+    ubs = {key: block_ub(tcells, tbook, row) for key, (label, row) in blocks.items()}
 
     log = {"filled": [], "cleared": [], "inexact": [], "missing_cells": [], "verify_bad": [],
-           "calc": True, "unlinked": []}
+           "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": []}
     zin = zipfile.ZipFile(io.BytesIO(template_bytes))
     paths = sheet_paths(zin)
     jpath = next(p for n, p in paths if n == JOURNAL_SHEET)
@@ -1195,7 +1324,20 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                 dp = max(dp, -b.normalize().as_tuple().exponent)
             else:
                 target = p["value"]
-            new, exact = gen_triplet(seeds[key], target, dp)
+            new = None
+            if p.get("unc") and p["unc"] > 0:
+                if ubs[key] is None:
+                    log["u_skip"].append(label)
+                else:
+                    new, extra, uok = fit_u_triplet(seeds[key], target, dp, p["unc"], p["unc_dp"], ubs[key])
+                    if new is not None:
+                        exact = True
+                        log["u_fit"].append((label, p["unc"], p["unc_dp"], extra, uok, key))
+                    else:
+                        log["u_bad"].append("%s: протокол %s, а формулы шаблона дают не меньше %s" % (
+                            label, fmt(p["unc"]), round(u_of_s(1e-9, ubs[key]), p["unc_dp"] + 2)))
+            if new is None:
+                new, exact = gen_triplet(seeds[key], target, dp)
             for ref, x in zip(cells, new):
                 j, ok = set_input(j, ref, fmt(x))
                 if ok:
@@ -1263,6 +1405,14 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                 continue
             if abs(D(repr(r[1])) - (D(avg.numerator) / D(avg.denominator) - b)) > D("1e-6"):
                 log["unlinked"].append(label)
+        # контроль неопределённости: U в журнале (колонка F) = протоколу после округления
+        for label, unc, unc_dp, extra, uok, key in log["u_fit"]:
+            row = blocks[key][1]
+            r = book.result(JOURNAL_SHEET, "F%d" % row)
+            got = r[1] if r[0] == "v" and isinstance(r[1], (int, float)) else None
+            if got is None or not _round_eq(got, unc, unc_dp):
+                log["u_bad"].append("%s: протокол %s, в журнале %s" % (
+                    label, fmt(unc), "ошибка" if got is None else round(got, unc_dp + 2)))
     except Exception:  # noqa: BLE001
         log["calc"] = False
         for n, p in paths:
@@ -1396,6 +1546,16 @@ def main():
         st.success("Проверка: среднее каждого заполненного блока совпадает с протоколом.")
     else:
         st.warning("Значения формул не посчитаны: они пересчитаются при открытии файла в Excel.")
+    if log.get("u_bad"):
+        st.error("Неопределённость не удалось сделать как в протоколе — формулы шаблона "
+                 "(UB, TINV) не дают такого значения; поставлено ближайшее возможное:\n" +
+                 "\n".join("- %s" % x for x in log["u_bad"]))
+    elif log.get("u_fit") and log["calc"]:
+        st.success("Проверка: неопределённость (колонка F) совпадает с протоколом у %d блоков."
+                   % len(log["u_fit"]))
+    if log.get("u_skip"):
+        st.warning("Для этих блоков неопределённость не подгонялась (нестандартные формулы шаблона): "
+                   + "; ".join(log["u_skip"]))
     if log.get("unlinked"):
         st.warning("«СР.ЗАНЧ» этих блоков в шаблоне не связан с тройкой (проверьте формулы расчётного листа): "
                    + "; ".join(log["unlinked"]))
@@ -1424,6 +1584,10 @@ def main():
         for label, val, trip, exact, ok, key, dp in log["filled"]:
             st.write("**%s**: %s → %s%s%s" % (label, fmt(val), " / ".join(trip),
                                               "" if exact else " ≈", "" if ok else " ⚠️N"))
+    with st.expander("Неопределённость: протокол → журнал (%d)" % len(log.get("u_fit", []))):
+        for label, unc, unc_dp, extra, uok, key in log.get("u_fit", []):
+            st.write("%s **%s**: U = %s%s" % ("✅" if uok else "⚠️", label, fmt(unc),
+                                              (" (добавлено знаков после запятой: %d)" % extra) if extra else ""))
     st.caption("≈ — у этих блоков шаг разброса из шаблона слегка изменён (на 1–2 единицы последнего "
                "знака), чтобы среднее было точно равно значению протокола.")
 
