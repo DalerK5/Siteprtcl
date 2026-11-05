@@ -7,13 +7,14 @@
 Зависимости: streamlit, openpyxl, pypdf
 """
 import io
+import functools
 import itertools
 import math
 import re
 import zipfile
 import warnings
 from datetime import date
-from decimal import Decimal as D, InvalidOperation
+from decimal import Decimal as D, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction as Fr
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -28,7 +29,8 @@ warnings.filterwarnings("ignore")
 JOURNAL_SHEET = "НЕОПРЕДЕЛ"
 JCOL = "E"                     # колонка замеров на листе журнала
 TEMPLATE_NAME = "template.xlsx"
-PROTO_REF = ("48-04", "F1")    # «Приложение к протоколу №…» (на него ссылаются все расчётные листы)
+PROTO_REF = ("48-04", "F1")
+ID_REF = "E1"                  # «ID №…» на листе журнала = название PDF-файла    # «Приложение к протоколу №…» (на него ссылаются все расчётные листы)
 
 # --------------------------------------------------------------------------
 # Раскладка журнала (лист «НЕОПРЕДЕЛ»): ключ -> (подпись, первая строка тройки)
@@ -100,7 +102,7 @@ LAMPS = {
 POS_LABEL = {"top": "верхняя точка", "bot": "нижняя точка", "betw": "между внутренними точками",
              "width": "до габарита по ширине", "len": "от передней части АТС",
              "brake": "до сигнала торможения"}
-DIM_KEYS = ("length", "width", "height")   # в протоколе — m, в журнале — mm
+DIM_KEYS = ("length", "width", "height")   # в журнале — m (как в протоколе)
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
@@ -162,7 +164,7 @@ def parse_meta(raw):
             # «марки DONGFENG модели EII008,»
             r"марк[аиеу]?\s+([^,«»\"”]+?)\s+модел[ьиюе]?\s+([^,«»\"”]+?)\s*(?:,|VIN|идент|$)",
             # «markasi YUTONG, model ZK6890HQG,»
-            r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s+([^,\s]+(?:\s[^,\s]+)?)\s*(?:,|VIN)",
+            r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s*:?\s*([^,\s]+(?:\s[^,\s:]+)?)\s*(?:,|VIN)",
             # «FOTON markali BJ6931 modelli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
             # «марки MAN шасси MAN TGM-13.290 (»
@@ -273,7 +275,10 @@ def parse_params(raw):
                 continue
             toks = mm.group(2).split()
             if len(toks) >= 3 and re.fullmatch(r"-?[\d.,]+", toks[0]) and re.fullmatch(r"-?[\d.,]+", toks[-2]):
-                rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3)})
+                nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]\d+)?,?", t)]
+                unc = nums[1] if len(nums) >= 3 else None
+                rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3),
+                             "unc": unc})
         if not rows:
             continue
         params.append({"section": fold(section), "name": name, "raw_l": name.lower(),
@@ -303,6 +308,17 @@ def row_value(row, req):
     if cf is True and cm is False:
         return f, decimals_of(row["final"]), "измерено %s, в итоге %s — взято итоговое" % (row["meas"], row["final"])
     return m, decimals_of(row["meas"]), "измерено %s, в итоге %s — взято измеренное" % (row["meas"], row["final"])
+
+
+def param_unc(p):
+    """Неопределённость из протокола: (Decimal, знаков) или (None, 0)."""
+    for r in p["rows"]:
+        if r.get("unc"):
+            try:
+                return to_dec(r["unc"]), decimals_of(r["unc"])
+            except (InvalidOperation, ValueError):
+                pass
+    return None, 0
 
 
 def param_value(p):
@@ -560,17 +576,18 @@ def map_params(params):
             trace.append((p, None))
             continue
         unit = p["rows"][0]["unit"].lower()
-        if key in DIM_KEYS and (unit in ("m", "м") or v < 100):
-            v, dp = v * 1000, max(dp - 3, 0)          # m -> mm (в журнале габариты в mm)
-            v = v.quantize(D(1).scaleb(-dp))
-            notes = notes + ["переведено из m в mm: %s" % fmt(v)]
-        if key == "first_aid" and unit not in ("mm", "мм"):
-            notes = notes + ["в протоколе единица «%s», в журнале — mm" % p["rows"][0]["unit"]]
+        unc, unc_dp = param_unc(p)
+        if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
+            if unc is not None:
+                unc, unc_dp = unc / 1000, unc_dp + 3
+            v, dp = v / 1000, dp + 3                   # mm -> m (в журнале габариты в m)
+            notes = notes + ["переведено из mm в m: %s" % fmt(v)]
         if p.get("_guess"):
             notes = notes + ["в протоколе нет названия огня — по порядку пунктов отнесено к «%s»"
                              % LAMPS[p["_guess"]][0]]
         ok = all(r["concl"] == "M" for r in p["rows"])
-        values[key] = {"value": v, "dp": dp, "ok": ok, "name": p["name"], "notes": notes}
+        values[key] = {"value": v, "dp": dp, "ok": ok, "name": p["name"], "notes": notes,
+                       "unc": unc, "unc_dp": unc_dp}
         trace.append((p, key))
     return values, unmatched, dup, trace
 
@@ -638,6 +655,92 @@ def gen_triplet(seed, P, dp):
     return new, True
 
 
+@functools.lru_cache(maxsize=None)
+def _t95(df):
+    return t_inv_2t(0.05, df)
+
+
+def u_of_s(s, ub):
+    """Расширенная неопределённость по формулам шаблона:
+    UA=STDEVA/√3, u=√(UA²+UB²), veff=u⁴/(UA⁴/2), U=TINV(0.05;veff)·u."""
+    if s <= 0:
+        return None
+    ua = s / math.sqrt(3.0)
+    uu = math.sqrt(ua * ua + ub * ub)
+    veff = uu ** 4 / (ua ** 4 / 2.0)
+    df = int(min(veff, 1e7))
+    if df < 1:
+        return None
+    return _t95(df) * uu
+
+
+def _round_eq(x, target, nd):
+    q = D(1).scaleb(-nd)
+    return D(repr(x)).quantize(q, rounding=ROUND_HALF_UP) == target.quantize(q)
+
+
+def fit_u_triplet(seed, center, dp, unc, unc_dp, ub):
+    """Тройка со средним РОВНО center и неопределённостью U, которая после округления
+    до unc_dp знаков равна unc (как в протоколе). Характер (порядок) разброса — из шаблона.
+    -> (тройка, добавлено_знаков, ok)"""
+    target = float(unc)
+    lo_u = u_of_s(1e-12, ub) or 0.0
+    lo, hi = 1e-12, max(target, 1e-6)
+    while (u_of_s(hi, ub) or 0) < target and hi < 1e12:
+        hi *= 2.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if (u_of_s(mid, ub) or 0) < target:
+            lo = mid
+        else:
+            hi = mid
+    s_t = hi
+    if seed and all(x is not None for x in seed) and len(set(seed)) > 1:
+        m = sum(float(x) for x in seed) / 3.0
+        e = [float(x) - m for x in seed]
+    else:
+        e = [1.0, 0.0, -1.0]
+    se = math.sqrt(sum(x * x for x in e) / 2.0)
+    e = [x / se for x in e]
+    seed_sign = [_sgn(e[i] - e[j]) for i, j in ((0, 1), (0, 2), (1, 2))]
+    best_any = None
+    for k in range(dp, dp + 5):
+        q = 10.0 ** -k
+        scale = s_t / q
+        if scale < 0.5:
+            continue
+        n0, n1 = round(e[0] * scale), round(e[1] * scale)
+        r = int(min(40, max(3, 0.08 * scale + 3)))
+        found = None
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                n = (n0 + dx, n1 + dy, -(n0 + dx + n1 + dy))
+                if n[0] == n[1] == n[2]:
+                    continue
+                mn = sum(n) / 3.0
+                s = q * math.sqrt(sum((x - mn) ** 2 for x in n) / 2.0)
+                u = u_of_s(s, ub)
+                if u is None:
+                    continue
+                vals = [center + D(x).scaleb(-k) for x in n]
+                if min(vals) < 0 <= center:
+                    continue
+                ch = sum(_sgn(n[i] - n[j]) != seed_sign[t] for t, (i, j) in enumerate(((0, 1), (0, 2), (1, 2))))
+                dist = abs(u - target)
+                if best_any is None or dist < best_any[0]:
+                    best_any = (dist, vals, k)
+                if _round_eq(u, unc, unc_dp):
+                    safe = dist <= 0.3 * 10.0 ** -unc_dp
+                    cost = (not safe, ch, dist)
+                    if found is None or cost < found[0]:
+                        found = (cost, vals)
+        if found:
+            return found[1], k - dp, True
+    if best_any:
+        return best_any[1], best_any[2] - dp, False
+    return None, 0, target >= lo_u
+
+
 def fmt(x):
     s = format(x.normalize(), "f")
     return "0" if s in ("-0", "") else s
@@ -658,7 +761,8 @@ _TOK = re.compile(
    |(?P<bool>TRUE|FALSE)(?![A-Za-z0-9_.(])
    |(?P<fn>[A-Za-z_][A-Za-z0-9_.]*)(?=\()
    |(?P<ref>(?:(?:'(?:[^']|'')+'|[^\s!()+\-*/^,:'"=<>&]+)!)?\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)
-   |(?P<op>[-+*/^(),])
+   |(?P<str>"(?:[^"]|"")*")
+   |(?P<op><>|<=|>=|[-+*/^(),=<>])
     )""", re.X)
 
 
@@ -817,7 +921,7 @@ class Evaluator:
         return tok
 
     def run(self):
-        v = self.expr()
+        v = self.comp()
         if self.i < len(self.t):
             raise XlErr("#VALUE!")
         if isinstance(v, list):
@@ -844,6 +948,20 @@ class Evaluator:
         if i1 == i2 and j1 <= rr <= j2:
             return self.b.value(sheet, get_column_letter(i1) + str(rr))
         raise XlErr("#VALUE!")
+
+    def comp(self):
+        v = self.expr()
+        ops = {"=": lambda a, b: a == b, "<>": lambda a, b: a != b, "<": lambda a, b: a < b,
+               ">": lambda a, b: a > b, "<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
+        while self.peek()[0] == "op" and self.peek()[1] in ops:
+            op = self.take()[1]
+            r = self.expr()
+            if isinstance(v, str) or isinstance(r, str):
+                a, b = ("" if v is None else str(v)), ("" if r is None else str(r))
+            else:
+                a, b = _num(v), _num(r)
+            v = ops[op](a, b)
+        return v
 
     def expr(self):
         v = self.term()
@@ -895,18 +1013,22 @@ class Evaluator:
             return float(txt)
         if kind == "bool":
             return txt == "TRUE"
+        if kind == "str":
+            return txt[1:-1].replace('""', '"')
         if kind == "op" and txt == "(":
-            v = self.expr()
+            v = self.comp()
             if self.take() != ("op", ")"):
                 raise XlErr("#NAME?")
             return v
+        if kind == "fn" and txt.upper() == "IF":
+            return self.call_if()
         if kind == "fn":
             if self.take() != ("op", "("):
                 raise XlErr("#NAME?")
             args = []
             if self.peek() != ("op", ")"):
                 while True:
-                    args.append(self.expr())
+                    args.append(self.comp())
                     tok = self.take()
                     if tok == ("op", ")"):
                         break
@@ -927,8 +1049,54 @@ class Evaluator:
             return self.b.value(sheet, rest)
         raise XlErr("#NAME?")
 
+    def skip_arg(self):
+        """Пропустить аргумент функции (до «,» или «)» своего уровня)."""
+        depth = 0
+        while self.i < len(self.t):
+            k, v = self.peek()
+            if k == "op" and v == "(":
+                depth += 1
+            elif k == "op" and v == ")":
+                if depth == 0:
+                    return
+                depth -= 1
+            elif k == "op" and v == "," and depth == 0:
+                return
+            self.take()
+
+    def call_if(self):
+        """IF(условие, да, нет) — вычисляется только нужная ветка (как в Excel)."""
+        if self.take() != ("op", "("):
+            raise XlErr("#NAME?")
+        cond = self.comp()
+        c = cond if isinstance(cond, bool) else _num(cond) != 0
+        if self.take() != ("op", ","):
+            raise XlErr("#NAME?")
+        res = False
+        if c:
+            res = self.comp()
+        else:
+            self.skip_arg()
+        tok = self.take()
+        if tok == ("op", ","):
+            if c:
+                self.skip_arg()
+            else:
+                res = self.comp()
+            tok = self.take()
+        if tok != ("op", ")"):
+            raise XlErr("#NAME?")
+        return res
+
     def call(self, name, args):
         n = name.upper().replace("_XLFN.", "")
+        if n == "COUNT":
+            cnt = 0
+            for a in args:
+                for x in (a if isinstance(a, list) else [a]):
+                    if isinstance(x, (int, float)) and not isinstance(x, bool):
+                        cnt += 1
+            return float(cnt)
         if n in ("AVERAGE", "STDEVA"):
             vals = []
             for a in args:
@@ -1133,11 +1301,49 @@ def block_bias(book, row):
         return None
 
 
+def block_ub(cells, book, row):
+    """UB блока: F[r] -> лист!U (=t*u) -> u (=SQRT(UA^2+UB^2)) -> UB. None — цепочка нестандартная."""
+    try:
+        f = cells[JOURNAL_SHEET].get("F%d" % row)
+        m = re.fullmatch(r"='?((?:[^']|'')+?)'?!\$?([A-Z]+)\$?(\d+)", f or "")
+        if not m:
+            return None
+        sh = m.group(1).replace("''", "'")
+        uc = cells[sh].get(m.group(2) + m.group(3))
+        mm = re.fullmatch(r"=([A-Z]+\d+)\*([A-Z]+\d+)", uc or "")
+        if not mm:
+            return None
+        tf, uf = cells[sh].get(mm.group(1)), cells[sh].get(mm.group(2))
+        m3 = re.fullmatch(r"=SQRT\(([A-Z]+\d+)\^2\+([A-Z]+\d+)\^2\)", uf or "")
+        mt = re.fullmatch(r"=TINV\(0\.05,([A-Z]+\d+)\)", tf or "")
+        if not (m3 and mt):
+            return None
+        if not re.fullmatch(r"=STDEVA\([A-Z]+\d+:[A-Z]+\d+\)/SQRT\(3\)", cells[sh].get(m3.group(1)) or ""):
+            return None
+        ub = book.value(sh, m3.group(2))
+        return (float(ub), sh, m3.group(2)) if isinstance(ub, (int, float)) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Запасные значения UB (вида «=a/2»), если с UB шаблона неопределённость протокола недостижима
+UB_STEPS = ("0.3", "0.2", "0.1", "0.05", "0.03", "0.02", "0.01", "0.005", "0.003", "0.002", "0.001",
+            "0.0005", "0.0002", "0.0001")
+
+
+def set_formula(xml, ref, formula):
+    m = cell_re(ref).search(xml)
+    if not m:
+        return xml, False
+    attrs = T_ATTR_RE.sub("", m.group(1))
+    return xml[:m.start()] + '<c r="%s"%s><f>%s</f></c>' % (ref, attrs, escape(formula)) + xml[m.end():], True
+
+
 def num_or_text(v):
     return fmt(D(v)) if v is not None else ""
 
 
-def fill_workbook(template_bytes, meta, values, mode="meas"):
+def fill_workbook(template_bytes, meta, values, mode="corr"):
     """mode: "meas" — среднее тройки = протоколу (как в шаблоне);
              "corr" — «СР.ЗАНЧ» (с поправкой Og'ish) = протоколу."""
     tcells = load_cells(template_bytes)
@@ -1156,9 +1362,11 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
             vals.append(D(repr(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else None)
         seeds[key] = vals
         bias[key] = block_bias(tbook, row)
+    ubs = {key: block_ub(tcells, tbook, row) for key, (label, row) in blocks.items()}
 
     log = {"filled": [], "cleared": [], "inexact": [], "missing_cells": [], "verify_bad": [],
-           "calc": True, "unlinked": []}
+           "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": [], "ub_changed": []}
+    ub_cells = {}   # лист -> {ячейка: новая формула UB}
     zin = zipfile.ZipFile(io.BytesIO(template_bytes))
     paths = sheet_paths(zin)
     jpath = next(p for n, p in paths if n == JOURNAL_SHEET)
@@ -1173,6 +1381,8 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
             ("D8", "%s m/s" % num_or_text(meta["wind"]) if meta["wind"] is not None else ""),
             ("D10", meta["brand"]), ("D11", meta["model"]), ("D12", meta["category"]),
             ("D14", meta["vin"])]
+    if meta.get("id"):
+        head.append((ID_REF, "ID № %s" % meta["id"]))
     for ref, v in head:
         if v and v.strip():
             j, ok = set_str(j, ref, v)
@@ -1181,6 +1391,7 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                 log["missing_cells"].append(ref)
 
     # --- замеры
+    block_rows = sorted({row for label, row in blocks.values()} | {436})
     for key, (label, row) in blocks.items():
         cells = [JCOL + str(row + k) for k in range(3)]
         if key in values:
@@ -1192,13 +1403,51 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                 dp = max(dp, -b.normalize().as_tuple().exponent)
             else:
                 target = p["value"]
-            new, exact = gen_triplet(seeds[key], target, dp)
+            new = None
+            if p.get("unc") and p["unc"] > 0:
+                if ubs[key] is None:
+                    log["u_skip"].append(label)
+                else:
+                    ub0, ush, ucell = ubs[key]
+                    new, extra, uok = fit_u_triplet(seeds[key], target, dp, p["unc"], p["unc_dp"], ub0)
+                    if new is None or not uok:
+                        # с UB шаблона так не получается — берём ближайшее меньшее «круглое» UB
+                        for a in UB_STEPS:
+                            ub1 = float(a) / 2
+                            if ub1 >= ub0:
+                                continue
+                            n2, e2, ok2 = fit_u_triplet(seeds[key], target, dp, p["unc"], p["unc_dp"], ub1)
+                            if n2 is not None and ok2:
+                                old_f = tcells[ush].get(ucell)
+                                ub_cells.setdefault(ush, {})[ucell] = "=%s/2" % a
+                                log["ub_changed"].append("%s: UB %s → =%s/2 ('%s'!%s)" % (
+                                    label, old_f, a, ush.strip(), ucell))
+                                new, extra, uok = n2, e2, ok2
+                                break
+                    if new is not None:
+                        exact = True
+                        log["u_fit"].append((label, p["unc"], p["unc_dp"], extra, uok, key))
+                    else:
+                        log["u_bad"].append("%s: протокол %s, а формулы шаблона дают не меньше %s" % (
+                            label, fmt(p["unc"]), round(u_of_s(1e-9, ub0), p["unc_dp"] + 2)))
+            if new is None:
+                new, exact = gen_triplet(seeds[key], target, dp)
             for ref, x in zip(cells, new):
                 j, ok = set_input(j, ref, fmt(x))
                 if ok:
                     jc[ref] = float(x)
                 else:
                     log["missing_cells"].append(ref)
+            if p.get("unc") is not None and p["unc"] == 0 and len(set(new)) == 1:
+                # в протоколе U = 0 и все замеры одинаковые: в журнале тоже 0 (а не #DIV/0!)
+                uref = "F%d" % row
+                f = jc.get(uref)
+                if isinstance(f, str) and f.startswith("="):
+                    nf = "IF(STDEVA(%s%d:%s%d)=0,0,%s)" % (JCOL, row, JCOL, row + 2, f[1:])
+                    j, okf = set_formula(j, uref, nf)
+                    if okf:
+                        jc[uref] = "=" + nf
+                        log["u_fit"].append((label, p["unc"], p["unc_dp"], 0, True, key))
             log["filled"].append((label, p["value"], [fmt(x) for x in new], exact, p["ok"], key, p["dp"]))
             if not exact:
                 log["inexact"].append(label)
@@ -1210,6 +1459,21 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                     jc.pop(ref, None)
             if had:
                 log["cleared"].append(label)
+            # среднее, решение и неопределённость пустого блока — пустые (без #DIV/0! и чисел),
+            # но при ручном вводе замеров формулы снова считают
+            guard = 'COUNT(%s%d:%s%d)=0' % (JCOL, row, JCOL, row + 2)
+            end = next((r for r in block_rows if r > row), row + 6)
+            for rr in range(row, end):
+                for col in (JCOL, "F"):
+                    if col == JCOL and rr < row + 3:
+                        continue
+                    ref = "%s%d" % (col, rr)
+                    f = jc.get(ref)
+                    if isinstance(f, str) and f.startswith("=") and "COUNT(" not in f:
+                        nf = 'IF(%s,"",%s)' % (guard, f[1:])
+                        j, ok = set_formula(j, ref, nf)
+                        if ok:
+                            jc[ref] = "=" + nf
     out[jpath] = j.encode("utf8")
 
     # --- номер протокола на расчётном листе «48-04» (остальные листы ссылаются на него)
@@ -1226,6 +1490,11 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
     for n, p in paths:
         if p not in out:
             out[p] = zin.read(p)
+        if n in ub_cells:
+            x = out[p].decode("utf8")
+            for ref, f in ub_cells[n].items():
+                x, _ = set_formula(x, ref, f[1:])
+            out[p] = x.encode("utf8")
 
     wbx = zin.read("xl/workbook.xml").decode("utf8")
     if "<calcPr" in wbx:
@@ -1242,6 +1511,8 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
         allc[JOURNAL_SHEET] = jc
         if pr_cells:
             allc[pr_sheet] = dict(allc[pr_sheet], **pr_cells)
+        for sh_, cc in ub_cells.items():
+            allc[sh_] = dict(allc[sh_], **cc)
         book = Book(allc)
         for n, p in paths:
             out[p] = inject_values(out[p].decode("utf8"), n, book).encode("utf8")
@@ -1260,6 +1531,14 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                 continue
             if abs(D(repr(r[1])) - (D(avg.numerator) / D(avg.denominator) - b)) > D("1e-6"):
                 log["unlinked"].append(label)
+        # контроль неопределённости: U в журнале (колонка F) = протоколу после округления
+        for label, unc, unc_dp, extra, uok, key in log["u_fit"]:
+            row = blocks[key][1]
+            r = book.result(JOURNAL_SHEET, "F%d" % row)
+            got = r[1] if r[0] == "v" and isinstance(r[1], (int, float)) else None
+            if got is None or not _round_eq(got, unc, unc_dp):
+                log["u_bad"].append("%s: протокол %s, в журнале %s" % (
+                    label, fmt(unc), "ошибка" if got is None else round(got, unc_dp + 2)))
     except Exception:  # noqa: BLE001
         log["calc"] = False
         for n, p in paths:
@@ -1267,11 +1546,12 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
     return pack_out(zin, out), log
 
 
-def process(pdf_bytes, template_bytes, mode="meas"):
+def process(pdf_bytes, template_bytes, mode="corr", file_id=""):
     raw = pdf_text(pdf_bytes)
     if "Aniqlanayotgan parametr nomi" not in raw:
         raise ValueError("В PDF не найден текст протокола (возможно, это скан без текстового слоя).")
     meta = parse_meta(raw)
+    meta["id"] = (file_id or "").strip()
     params = parse_params(raw)
     if not params:
         raise ValueError("В протоколе не удалось найти таблицы результатов.")
@@ -1288,6 +1568,13 @@ def process(pdf_bytes, template_bytes, mode="meas"):
     return data, meta, log
 
 
+def id_from_filename(fname):
+    """ID = название PDF-файла: «1901093.pdf», «1901093 (1).pdf» -> «1901093»."""
+    stem = Path(fname or "").stem
+    m = re.search(r"\d{4,}", stem)
+    return m.group(0) if m else stem.strip()
+
+
 def safe_name(s):
     return re.sub(r"[^\w\-.]+", "_", s, flags=re.U).strip("_")
 
@@ -1295,8 +1582,64 @@ def safe_name(s):
 # --------------------------------------------------------------------------
 # Интерфейс Streamlit
 # --------------------------------------------------------------------------
-MODES = {"По замерам: среднее тройки = протоколу (как в шаблоне)": "meas",
-         "По «СР.ЗАНЧ»: среднее с поправкой Og'ish = протоколу": "corr"}
+MODES = {"«СР.ЗАНЧ» (среднее с поправкой Og'ish) = протоколу": "corr",
+         "Среднее самих замеров = протоколу (без поправки)": "meas"}
+
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def out_name(meta):
+    if meta.get("id"):
+        return "%s.xlsx" % safe_name(meta["id"])
+    return "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
+
+
+def problems(meta, log):
+    """Короткий список того, что требует внимания (для сводки)."""
+    res = []
+    if log["verify_bad"] or log.get("unlinked"):
+        res.append("среднее не сошлось")
+    if log.get("u_bad"):
+        res.append("U не сошлась: %d" % len(log["u_bad"]))
+    if not log["calc"]:
+        res.append("формулы не посчитаны")
+    if log["nonconf"]:
+        res.append("есть N в протоколе")
+    if log.get("suspect"):
+        res.append("нераспознанные огни")
+    if not meta["brand"] or not meta["model"]:
+        res.append("нет марки/модели")
+    if log["notes"]:
+        res.append("расхождения в протоколе: %d" % len(log["notes"]))
+    if log.get("ub_changed"):
+        res.append("UB изменена: %d" % len(log["ub_changed"]))
+    return res
+
+
+def unique_ids(names):
+    ids, seen = [], {}
+    for nm in names:
+        i = id_from_filename(nm) or "file"
+        seen[i] = seen.get(i, 0) + 1
+        ids.append(i if seen[i] == 1 else "%s_%d" % (i, seen[i]))
+    return ids
+
+
+def make_zip(results):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        used = set()
+        for r in results:
+            if r["data"] is None:
+                continue
+            nm = out_name(r["meta"])
+            base, n = nm[:-5], 2
+            while nm in used:
+                nm, n = "%s_%d.xlsx" % (base, n), n + 1
+            used.add(nm)
+            z.writestr(nm, r["data"])
+    return buf.getvalue()
 
 
 def main():
@@ -1307,7 +1650,8 @@ def main():
         unsafe_allow_html=True,
     )
     st.title("🚌 Журнал испытаний M2–M3")
-    st.caption("Автобусы и микроавтобусы. Загрузите PDF-протокол — получите заполненный журнал по шаблону.")
+    st.caption("Автобусы и микроавтобусы. Загрузите один или сразу несколько PDF-протоколов — "
+               "получите заполненные журналы по шаблону.")
 
     tpl_path = Path(__file__).resolve().parent / TEMPLATE_NAME
     template_bytes = tpl_path.read_bytes() if tpl_path.exists() else None
@@ -1323,43 +1667,85 @@ def main():
                 template_bytes = up_t.getvalue()
             st.radio("С протоколом совпадает:", list(MODES), key="mode")
 
-    pdf = st.file_uploader("PDF-протокол испытаний", type=["pdf"], key="pdf")
+    pdfs = st.file_uploader("PDF-протоколы испытаний (можно несколько)", type=["pdf"],
+                            accept_multiple_files=True, key="pdfs") or []
+    ids = unique_ids([f.name for f in pdfs])
+    if len(pdfs) == 1:
+        ids[0] = st.text_input("ID (берётся из названия файла)", value=ids[0], key="id_" + pdfs[0].name)
+    elif pdfs:
+        st.caption("ID берутся из названий файлов: " + ", ".join(ids))
 
-    if st.button("Заполнить журнал", type="primary", use_container_width=True,
-                 disabled=(pdf is None or template_bytes is None)):
-        try:
-            mode = MODES.get(st.session_state.get("mode"), "meas")
-            with st.spinner("Обработка протокола…"):
-                data, meta, log = process(pdf.getvalue(), template_bytes, mode)
-            st.session_state["res"] = (data, meta, log, pdf.name)
-        except Exception as e:  # noqa: BLE001
-            st.session_state.pop("res", None)
-            st.error("Не удалось обработать файл: %s" % e)
+    label = "Заполнить журнал" if len(pdfs) <= 1 else "Заполнить журналы (%d)" % len(pdfs)
+    if st.button(label, type="primary", use_container_width=True,
+                 disabled=(not pdfs or template_bytes is None)):
+        mode = MODES.get(st.session_state.get("mode"), "corr")
+        results = []
+        bar = st.progress(0.0, text="Обработка…")
+        for n, (f, fid) in enumerate(zip(pdfs, ids)):
+            bar.progress(n / len(pdfs), text="Обработка %d из %d: %s" % (n + 1, len(pdfs), f.name))
+            try:
+                data, meta, log = process(f.getvalue(), template_bytes, mode, fid)
+                results.append({"name": f.name, "data": data, "meta": meta, "log": log, "err": None})
+            except Exception as e:  # noqa: BLE001
+                results.append({"name": f.name, "data": None, "meta": None, "log": None, "err": str(e)})
+        bar.empty()
+        st.session_state["batch"] = results
 
     if template_bytes is None:
         st.info("Положите template.xlsx рядом с app.py или загрузите шаблон выше.")
-    elif pdf is None:
-        st.info("Загрузите PDF-протокол.")
+    elif not pdfs:
+        st.info("Загрузите PDF-протокол(ы).")
 
-    res = st.session_state.get("res")
-    if not res:
+    results = st.session_state.get("batch")
+    if not results:
         return
-    data, meta, log, pdf_name = res
+    ok = [r for r in results if r["data"] is not None]
 
-    st.success("Журнал готов")
-    name = "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
-    st.download_button(
-        "⬇️ Скачать журнал (.xlsx)", data=data, file_name=name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    if len(results) == 1:
+        r = results[0]
+        if r["err"]:
+            st.error("Не удалось обработать файл: %s" % r["err"])
+            return
+        st.success("Журнал готов")
+        st.download_button("⬇️ Скачать журнал (.xlsx)", data=r["data"], file_name=out_name(r["meta"]),
+                           mime=XLSX_MIME, use_container_width=True)
+        show_details(r["meta"], r["log"])
+        return
 
+    st.success("Готово: %d из %d" % (len(ok), len(results)))
+    if ok:
+        st.download_button("⬇️ Скачать все журналы (.zip, %d)" % len(ok), data=make_zip(results),
+                           file_name="Журналы_M2M3.zip", mime="application/zip", use_container_width=True)
+    st.subheader("Сводка")
+    for n, r in enumerate(results):
+        if r["err"]:
+            st.error("❌ **%s** — не обработан: %s" % (r["name"], r["err"]))
+            continue
+        meta, log = r["meta"], r["log"]
+        pr = problems(meta, log)
+        line = "**%s** — %s %s · заполнено %d · U совпала %d/%d" % (
+            meta.get("id") or r["name"], meta["brand"] or "?", meta["model"] or "?", len(log["filled"]),
+            sum(1 for x in log.get("u_fit", []) if x[4]), len(log.get("u_fit", [])))
+        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки")) for x in pr)
+        (st.warning if hard else st.success)(("⚠️ " if hard else "✅ ") + line +
+                                             ("\n\n" + "; ".join(pr) if pr else ""))
+        st.download_button("⬇️ %s" % out_name(meta), data=r["data"], file_name=out_name(meta),
+                           mime=XLSX_MIME, use_container_width=True, key="dl_%d" % n)
+
+    if ok:
+        st.subheader("Подробности")
+        names = [(r["meta"].get("id") or r["name"]) for r in ok]
+        pick = st.selectbox("Файл", list(range(len(ok))), format_func=lambda i: names[i])
+        show_details(ok[pick]["meta"], ok[pick]["log"])
+
+
+def show_details(meta, log):
     d = meta["date"]
     st.subheader("Реквизиты")
     st.markdown(
-        "- **Протокол:** %s\n- **Марка / модель:** %s / %s\n- **Категория:** %s\n- **VIN:** %s\n"
+        "- **ID:** %s\n- **Протокол:** %s\n- **Марка / модель:** %s / %s\n- **Категория:** %s\n- **VIN:** %s\n"
         "- **Дата испытаний:** %s\n- **Условия:** %s °C, %s %%, %s кПа, %s м/с" % (
-            meta["protocol"] or "—", meta["brand"] or "—", meta["model"] or "—", meta["category"] or "—",
+            meta.get("id") or "—", meta["protocol"] or "—", meta["brand"] or "—", meta["model"] or "—", meta["category"] or "—",
             meta["vin"] or "—", d.strftime("%d.%m.%Y") if d else "—",
             meta["temp"], meta["hum"], meta["press"], meta["wind"]))
     if len(meta.get("vins", [])) > 1:
@@ -1378,6 +1764,20 @@ def main():
         st.success("Проверка: среднее каждого заполненного блока совпадает с протоколом.")
     else:
         st.warning("Значения формул не посчитаны: они пересчитаются при открытии файла в Excel.")
+    if log.get("u_bad"):
+        st.error("Неопределённость не удалось сделать как в протоколе — формулы шаблона "
+                 "(UB, TINV) не дают такого значения; поставлено ближайшее возможное:\n" +
+                 "\n".join("- %s" % x for x in log["u_bad"]))
+    elif log.get("u_fit") and log["calc"]:
+        st.success("Проверка: неопределённость (колонка F) совпадает с протоколом у %d блоков."
+                   % len(log["u_fit"]))
+    if log.get("ub_changed"):
+        st.warning("Чтобы неопределённость совпала с протоколом, в этих блоках уменьшена погрешность "
+                   "прибора UB (в шаблоне она больше, чем допускает протокол). Сверьте с паспортом прибора:\n" +
+                   "\n".join("- %s" % x for x in log["ub_changed"]))
+    if log.get("u_skip"):
+        st.warning("Для этих блоков неопределённость не подгонялась (нестандартные формулы шаблона): "
+                   + "; ".join(log["u_skip"]))
     if log.get("unlinked"):
         st.warning("«СР.ЗАНЧ» этих блоков в шаблоне не связан с тройкой (проверьте формулы расчётного листа): "
                    + "; ".join(log["unlinked"]))
@@ -1406,6 +1806,10 @@ def main():
         for label, val, trip, exact, ok, key, dp in log["filled"]:
             st.write("**%s**: %s → %s%s%s" % (label, fmt(val), " / ".join(trip),
                                               "" if exact else " ≈", "" if ok else " ⚠️N"))
+    with st.expander("Неопределённость: протокол → журнал (%d)" % len(log.get("u_fit", []))):
+        for label, unc, unc_dp, extra, uok, key in log.get("u_fit", []):
+            st.write("%s **%s**: U = %s%s" % ("✅" if uok else "⚠️", label, fmt(unc),
+                                              (" (добавлено знаков после запятой: %d)" % extra) if extra else ""))
     st.caption("≈ — у этих блоков шаг разброса из шаблона слегка изменён (на 1–2 единицы последнего "
                "знака), чтобы среднее было точно равно значению протокола.")
 
