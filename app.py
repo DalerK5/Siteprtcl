@@ -1271,6 +1271,85 @@ def block_ub(cells, book, row, col):
         return None
 
 
+class Styles:
+    """Добавление форматов чисел в styles.xml (копия стиля ячейки с другим числовым форматом)."""
+    BUILTIN = {"General": 0, "0": 1, "0.00": 2}
+
+    def __init__(self, xml):
+        self.xml = xml
+        m = re.search(r"<cellXfs\b[^>]*>(.*?)</cellXfs>", xml, re.S)
+        self.xfs = re.findall(r"<xf\b[^>]*/>|<xf\b[^>]*>.*?</xf>", m.group(1), re.S) if m else []
+        self.fmts = {code: int(i) for i, code in re.findall(r'<numFmt numFmtId="(\d+)" formatCode="([^"]*)"\s*/>', xml)}
+        self.new_fmts, self.new_xfs, self.cache = [], [], {}
+
+    def fmt_id(self, code):
+        if code in self.BUILTIN:
+            return self.BUILTIN[code]
+        if code not in self.fmts:
+            nid = max([163] + list(self.fmts.values())) + 1
+            self.fmts[code] = nid
+            self.new_fmts.append('<numFmt numFmtId="%d" formatCode="%s"/>' % (nid, code))
+        return self.fmts[code]
+
+    def with_format(self, s, code):
+        key = (s, code)
+        if key in self.cache:
+            return self.cache[key]
+        if s >= len(self.xfs):
+            return s
+        fid = self.fmt_id(code)
+        xf = self.xfs[s]
+        if 'numFmtId="' in xf:
+            xf = re.sub(r'numFmtId="\d+"', 'numFmtId="%d"' % fid, xf, count=1)
+        else:
+            xf = xf.replace("<xf ", '<xf numFmtId="%d" ' % fid, 1)
+        if "applyNumberFormat=" in xf:
+            xf = re.sub(r'applyNumberFormat="\d"', 'applyNumberFormat="1"', xf, count=1)
+        else:
+            xf = xf.replace("<xf ", '<xf applyNumberFormat="1" ', 1)
+        idx = len(self.xfs) + len(self.new_xfs)
+        self.new_xfs.append(xf)
+        self.cache[key] = idx
+        return idx
+
+    def render(self):
+        x = self.xml
+        if self.new_fmts:
+            if "<numFmts" in x:
+                x = re.sub(r"</numFmts>", "".join(self.new_fmts) + "</numFmts>", x, count=1)
+                x = re.sub(r'<numFmts count="\d+"', '<numFmts count="%d"' % len(self.fmts), x, count=1)
+            else:
+                x = re.sub(r"(<styleSheet\b[^>]*>)", r'\1<numFmts count="%d">%s</numFmts>'
+                           % (len(self.new_fmts), "".join(self.new_fmts)), x, count=1)
+        if self.new_xfs:
+            x = re.sub(r"</cellXfs>", "".join(self.new_xfs) + "</cellXfs>", x, count=1)
+            x = re.sub(r'<cellXfs count="\d+"', '<cellXfs count="%d"' % (len(self.xfs) + len(self.new_xfs)),
+                       x, count=1)
+        return x
+
+
+def num_code(dp):
+    return "0" if dp <= 0 else "0." + "0" * dp
+
+
+def restyle(xml, ref, styles, code):
+    """Поменять числовой формат ячейки (остальное оформление — как было)."""
+    m = cell_re(ref).search(xml)
+    if not m:
+        return xml
+    attrs = m.group(1)
+    ms = re.search(r' s="(\d+)"', attrs)
+    s = int(ms.group(1)) if ms else 0
+    ns = styles.with_format(s, code)
+    new_attrs = re.sub(r' s="\d+"', ' s="%d"' % ns, attrs) if ms else attrs + ' s="%d"' % ns
+    head = '<c r="%s"%s' % (ref, attrs)
+    return xml[:m.start()] + '<c r="%s"%s' % (ref, new_attrs) + xml[m.start() + len(head):]
+
+
+def dec_count(s):
+    return len(s.split(".")[1]) if "." in s else 0
+
+
 def fill_workbook(template_bytes, meta, values):
     tcells = load_cells(template_bytes)
     if JOURNAL_SHEET not in tcells:
@@ -1382,6 +1461,18 @@ def fill_workbook(template_bytes, meta, values):
                     j, ok = set_formula(j, ref, nf)
                     if ok:
                         jc[ref] = "=" + nf
+    # --- формат чисел: столько знаков после запятой, сколько в протоколе (среднее и U) и в замерах
+    styles = Styles(zin.read("xl/styles.xml").decode("utf8"))
+    for label_, val_, trip_, exact_, ok_, key_, dp_ in log["filled"]:
+        b_ = blocks[key_]
+        row, col = b_[1], (b_[2] if len(b_) > 2 else JCOL)
+        for k_, t_ in enumerate(trip_):
+            j = restyle(j, "%s%d" % (col, row + k_), styles, num_code(max(dec_count(t) for t in trip_)))
+        j = restyle(j, "%s%d" % (col, row + 3), styles, num_code(dp_))
+        pv = values[key_]
+        if pv.get("unc") is not None:
+            j = restyle(j, "%s%d" % (col, row + 4), styles, num_code(pv["unc_dp"]))
+    out["xl/styles.xml"] = styles.render().encode("utf8")
     out[jpath] = j.encode("utf8")
 
     # --- расчётные листы: объект, дата, изменённые UB
