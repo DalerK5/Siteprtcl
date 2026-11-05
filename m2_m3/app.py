@@ -102,7 +102,7 @@ LAMPS = {
 POS_LABEL = {"top": "верхняя точка", "bot": "нижняя точка", "betw": "между внутренними точками",
              "width": "до габарита по ширине", "len": "от передней части АТС",
              "brake": "до сигнала торможения"}
-DIM_KEYS = ("length", "width", "height")   # в протоколе — m, в журнале — mm
+DIM_KEYS = ("length", "width", "height")   # в журнале — m (как в протоколе)
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря"]
@@ -164,7 +164,7 @@ def parse_meta(raw):
             # «марки DONGFENG модели EII008,»
             r"марк[аиеу]?\s+([^,«»\"”]+?)\s+модел[ьиюе]?\s+([^,«»\"”]+?)\s*(?:,|VIN|идент|$)",
             # «markasi YUTONG, model ZK6890HQG,»
-            r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s+([^,\s]+(?:\s[^,\s]+)?)\s*(?:,|VIN)",
+            r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s*:?\s*([^,\s]+(?:\s[^,\s:]+)?)\s*(?:,|VIN)",
             # «FOTON markali BJ6931 modelli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
             # «марки MAN шасси MAN TGM-13.290 (»
@@ -577,12 +577,11 @@ def map_params(params):
             continue
         unit = p["rows"][0]["unit"].lower()
         unc, unc_dp = param_unc(p)
-        if key in DIM_KEYS and (unit in ("m", "м") or v < 100):
+        if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
             if unc is not None:
-                unc, unc_dp = unc * 1000, max(unc_dp - 3, 0)
-            v, dp = v * 1000, max(dp - 3, 0)          # m -> mm (в журнале габариты в mm)
-            v = v.quantize(D(1).scaleb(-dp))
-            notes = notes + ["переведено из m в mm: %s" % fmt(v)]
+                unc, unc_dp = unc / 1000, unc_dp + 3
+            v, dp = v / 1000, dp + 3                   # mm -> m (в журнале габариты в m)
+            notes = notes + ["переведено из mm в m: %s" % fmt(v)]
         if p.get("_guess"):
             notes = notes + ["в протоколе нет названия огня — по порядку пунктов отнесено к «%s»"
                              % LAMPS[p["_guess"]][0]]
@@ -762,7 +761,8 @@ _TOK = re.compile(
    |(?P<bool>TRUE|FALSE)(?![A-Za-z0-9_.(])
    |(?P<fn>[A-Za-z_][A-Za-z0-9_.]*)(?=\()
    |(?P<ref>(?:(?:'(?:[^']|'')+'|[^\s!()+\-*/^,:'"=<>&]+)!)?\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)
-   |(?P<op>[-+*/^(),])
+   |(?P<str>"(?:[^"]|"")*")
+   |(?P<op><>|<=|>=|[-+*/^(),=<>])
     )""", re.X)
 
 
@@ -921,7 +921,7 @@ class Evaluator:
         return tok
 
     def run(self):
-        v = self.expr()
+        v = self.comp()
         if self.i < len(self.t):
             raise XlErr("#VALUE!")
         if isinstance(v, list):
@@ -948,6 +948,20 @@ class Evaluator:
         if i1 == i2 and j1 <= rr <= j2:
             return self.b.value(sheet, get_column_letter(i1) + str(rr))
         raise XlErr("#VALUE!")
+
+    def comp(self):
+        v = self.expr()
+        ops = {"=": lambda a, b: a == b, "<>": lambda a, b: a != b, "<": lambda a, b: a < b,
+               ">": lambda a, b: a > b, "<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
+        while self.peek()[0] == "op" and self.peek()[1] in ops:
+            op = self.take()[1]
+            r = self.expr()
+            if isinstance(v, str) or isinstance(r, str):
+                a, b = ("" if v is None else str(v)), ("" if r is None else str(r))
+            else:
+                a, b = _num(v), _num(r)
+            v = ops[op](a, b)
+        return v
 
     def expr(self):
         v = self.term()
@@ -999,18 +1013,22 @@ class Evaluator:
             return float(txt)
         if kind == "bool":
             return txt == "TRUE"
+        if kind == "str":
+            return txt[1:-1].replace('""', '"')
         if kind == "op" and txt == "(":
-            v = self.expr()
+            v = self.comp()
             if self.take() != ("op", ")"):
                 raise XlErr("#NAME?")
             return v
+        if kind == "fn" and txt.upper() == "IF":
+            return self.call_if()
         if kind == "fn":
             if self.take() != ("op", "("):
                 raise XlErr("#NAME?")
             args = []
             if self.peek() != ("op", ")"):
                 while True:
-                    args.append(self.expr())
+                    args.append(self.comp())
                     tok = self.take()
                     if tok == ("op", ")"):
                         break
@@ -1031,8 +1049,54 @@ class Evaluator:
             return self.b.value(sheet, rest)
         raise XlErr("#NAME?")
 
+    def skip_arg(self):
+        """Пропустить аргумент функции (до «,» или «)» своего уровня)."""
+        depth = 0
+        while self.i < len(self.t):
+            k, v = self.peek()
+            if k == "op" and v == "(":
+                depth += 1
+            elif k == "op" and v == ")":
+                if depth == 0:
+                    return
+                depth -= 1
+            elif k == "op" and v == "," and depth == 0:
+                return
+            self.take()
+
+    def call_if(self):
+        """IF(условие, да, нет) — вычисляется только нужная ветка (как в Excel)."""
+        if self.take() != ("op", "("):
+            raise XlErr("#NAME?")
+        cond = self.comp()
+        c = cond if isinstance(cond, bool) else _num(cond) != 0
+        if self.take() != ("op", ","):
+            raise XlErr("#NAME?")
+        res = False
+        if c:
+            res = self.comp()
+        else:
+            self.skip_arg()
+        tok = self.take()
+        if tok == ("op", ","):
+            if c:
+                self.skip_arg()
+            else:
+                res = self.comp()
+            tok = self.take()
+        if tok != ("op", ")"):
+            raise XlErr("#NAME?")
+        return res
+
     def call(self, name, args):
         n = name.upper().replace("_XLFN.", "")
+        if n == "COUNT":
+            cnt = 0
+            for a in args:
+                for x in (a if isinstance(a, list) else [a]):
+                    if isinstance(x, (int, float)) and not isinstance(x, bool):
+                        cnt += 1
+            return float(cnt)
         if n in ("AVERAGE", "STDEVA"):
             vals = []
             for a in args:
@@ -1327,6 +1391,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
                 log["missing_cells"].append(ref)
 
     # --- замеры
+    block_rows = sorted({row for label, row in blocks.values()} | {436})
     for key, (label, row) in blocks.items():
         cells = [JCOL + str(row + k) for k in range(3)]
         if key in values:
@@ -1384,6 +1449,21 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
                     jc.pop(ref, None)
             if had:
                 log["cleared"].append(label)
+            # среднее, решение и неопределённость пустого блока — пустые (без #DIV/0! и чисел),
+            # но при ручном вводе замеров формулы снова считают
+            guard = 'COUNT(%s%d:%s%d)=0' % (JCOL, row, JCOL, row + 2)
+            end = next((r for r in block_rows if r > row), row + 6)
+            for rr in range(row, end):
+                for col in (JCOL, "F"):
+                    if col == JCOL and rr < row + 3:
+                        continue
+                    ref = "%s%d" % (col, rr)
+                    f = jc.get(ref)
+                    if isinstance(f, str) and f.startswith("=") and "COUNT(" not in f:
+                        nf = 'IF(%s,"",%s)' % (guard, f[1:])
+                        j, ok = set_formula(j, ref, nf)
+                        if ok:
+                            jc[ref] = "=" + nf
     out[jpath] = j.encode("utf8")
 
     # --- номер протокола на расчётном листе «48-04» (остальные листы ссылаются на него)
