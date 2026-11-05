@@ -1257,9 +1257,22 @@ def block_ub(cells, book, row):
         if not re.fullmatch(r"=STDEVA\([A-Z]+\d+:[A-Z]+\d+\)/SQRT\(3\)", cells[sh].get(m3.group(1)) or ""):
             return None
         ub = book.value(sh, m3.group(2))
-        return float(ub) if isinstance(ub, (int, float)) else None
+        return (float(ub), sh, m3.group(2)) if isinstance(ub, (int, float)) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+# Запасные значения UB (вида «=a/2»), если с UB шаблона неопределённость протокола недостижима
+UB_STEPS = ("0.3", "0.2", "0.1", "0.05", "0.03", "0.02", "0.01", "0.005", "0.003", "0.002", "0.001",
+            "0.0005", "0.0002", "0.0001")
+
+
+def set_formula(xml, ref, formula):
+    m = cell_re(ref).search(xml)
+    if not m:
+        return xml, False
+    attrs = T_ATTR_RE.sub("", m.group(1))
+    return xml[:m.start()] + '<c r="%s"%s><f>%s</f></c>' % (ref, attrs, escape(formula)) + xml[m.end():], True
 
 
 def num_or_text(v):
@@ -1288,7 +1301,8 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
     ubs = {key: block_ub(tcells, tbook, row) for key, (label, row) in blocks.items()}
 
     log = {"filled": [], "cleared": [], "inexact": [], "missing_cells": [], "verify_bad": [],
-           "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": []}
+           "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": [], "ub_changed": []}
+    ub_cells = {}   # лист -> {ячейка: новая формула UB}
     zin = zipfile.ZipFile(io.BytesIO(template_bytes))
     paths = sheet_paths(zin)
     jpath = next(p for n, p in paths if n == JOURNAL_SHEET)
@@ -1329,13 +1343,28 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
                 if ubs[key] is None:
                     log["u_skip"].append(label)
                 else:
-                    new, extra, uok = fit_u_triplet(seeds[key], target, dp, p["unc"], p["unc_dp"], ubs[key])
+                    ub0, ush, ucell = ubs[key]
+                    new, extra, uok = fit_u_triplet(seeds[key], target, dp, p["unc"], p["unc_dp"], ub0)
+                    if new is None or not uok:
+                        # с UB шаблона так не получается — берём ближайшее меньшее «круглое» UB
+                        for a in UB_STEPS:
+                            ub1 = float(a) / 2
+                            if ub1 >= ub0:
+                                continue
+                            n2, e2, ok2 = fit_u_triplet(seeds[key], target, dp, p["unc"], p["unc_dp"], ub1)
+                            if n2 is not None and ok2:
+                                old_f = tcells[ush].get(ucell)
+                                ub_cells.setdefault(ush, {})[ucell] = "=%s/2" % a
+                                log["ub_changed"].append("%s: UB %s → =%s/2 ('%s'!%s)" % (
+                                    label, old_f, a, ush.strip(), ucell))
+                                new, extra, uok = n2, e2, ok2
+                                break
                     if new is not None:
                         exact = True
                         log["u_fit"].append((label, p["unc"], p["unc_dp"], extra, uok, key))
                     else:
                         log["u_bad"].append("%s: протокол %s, а формулы шаблона дают не меньше %s" % (
-                            label, fmt(p["unc"]), round(u_of_s(1e-9, ubs[key]), p["unc_dp"] + 2)))
+                            label, fmt(p["unc"]), round(u_of_s(1e-9, ub0), p["unc_dp"] + 2)))
             if new is None:
                 new, exact = gen_triplet(seeds[key], target, dp)
             for ref, x in zip(cells, new):
@@ -1371,6 +1400,11 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
     for n, p in paths:
         if p not in out:
             out[p] = zin.read(p)
+        if n in ub_cells:
+            x = out[p].decode("utf8")
+            for ref, f in ub_cells[n].items():
+                x, _ = set_formula(x, ref, f[1:])
+            out[p] = x.encode("utf8")
 
     wbx = zin.read("xl/workbook.xml").decode("utf8")
     if "<calcPr" in wbx:
@@ -1387,6 +1421,8 @@ def fill_workbook(template_bytes, meta, values, mode="meas"):
         allc[JOURNAL_SHEET] = jc
         if pr_cells:
             allc[pr_sheet] = dict(allc[pr_sheet], **pr_cells)
+        for sh_, cc in ub_cells.items():
+            allc[sh_] = dict(allc[sh_], **cc)
         book = Book(allc)
         for n, p in paths:
             out[p] = inject_values(out[p].decode("utf8"), n, book).encode("utf8")
@@ -1553,6 +1589,10 @@ def main():
     elif log.get("u_fit") and log["calc"]:
         st.success("Проверка: неопределённость (колонка F) совпадает с протоколом у %d блоков."
                    % len(log["u_fit"]))
+    if log.get("ub_changed"):
+        st.warning("Чтобы неопределённость совпала с протоколом, в этих блоках уменьшена погрешность "
+                   "прибора UB (в шаблоне она больше, чем допускает протокол). Сверьте с паспортом прибора:\n" +
+                   "\n".join("- %s" % x for x in log["ub_changed"]))
     if log.get("u_skip"):
         st.warning("Для этих блоков неопределённость не подгонялась (нестандартные формулы шаблона): "
                    + "; ".join(log["u_skip"]))
