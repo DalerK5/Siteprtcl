@@ -1438,6 +1438,16 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
                     jc[ref] = float(x)
                 else:
                     log["missing_cells"].append(ref)
+            if p.get("unc") is not None and p["unc"] == 0 and len(set(new)) == 1:
+                # в протоколе U = 0 и все замеры одинаковые: в журнале тоже 0 (а не #DIV/0!)
+                uref = "F%d" % row
+                f = jc.get(uref)
+                if isinstance(f, str) and f.startswith("="):
+                    nf = "IF(STDEVA(%s%d:%s%d)=0,0,%s)" % (JCOL, row, JCOL, row + 2, f[1:])
+                    j, okf = set_formula(j, uref, nf)
+                    if okf:
+                        jc[uref] = "=" + nf
+                        log["u_fit"].append((label, p["unc"], p["unc_dp"], 0, True, key))
             log["filled"].append((label, p["value"], [fmt(x) for x in new], exact, p["ok"], key, p["dp"]))
             if not exact:
                 log["inexact"].append(label)
