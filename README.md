@@ -13,3 +13,7 @@
 - `app.py` — основное приложение
 - `requirements.txt` — зависимости
 - `template.xlsx` — шаблон журнала
+
+## Категория M2–M3 (автобусы)
+
+Отдельное приложение в папке `m2_m3/` (свой `app.py`, `template.xlsx`, `requirements.txt`). На Streamlit Cloud — Main file path: `m2_m3/app.py`. Подробности в `m2_m3/README.md`.
