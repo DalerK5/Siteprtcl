@@ -1062,6 +1062,21 @@ class Evaluator:
         n = name.upper().replace("_XLFN.", "")
         if n in ("TRUE", "FALSE") and not args:
             return n == "TRUE"
+        if n == "MATCH":
+            look, arr = args[0], args[1] if isinstance(args[1], list) else [args[1]]
+            for i, x in enumerate(arr):
+                if (isinstance(x, str) and isinstance(look, str) and x.strip().lower() == look.strip().lower()) or \
+                        (not isinstance(x, str) and not isinstance(look, str) and x is not None and look is not None
+                         and _num(x) == _num(look)):
+                    return float(i + 1)
+            raise XlErr("#N/A")
+        if n == "INDEX":
+            arr = args[0] if isinstance(args[0], list) else [args[0]]
+            i = int(_num(args[1])) if len(args) > 1 else 1
+            if i < 1 or i > len(arr):
+                raise XlErr("#REF!")
+            v = arr[i - 1]
+            return 0.0 if v is None else v
         if n == "COUNT":
             cnt = 0
             for a in args:

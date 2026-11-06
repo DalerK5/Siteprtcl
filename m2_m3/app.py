@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Заполнение журнала сертификационных испытаний ТС категории M3
-(автобусы городские и междугородние) по PDF-протоколу испытаний (шаблон: template_m3.xlsx).
+Заполнение журнала сертификационных испытаний ТС категории M3 (автобусы)
+по PDF-протоколу испытаний (шаблон: template_m3.xlsx).
+Тот же код работает для M2 (m2/app.py) — отличаются только CAT и TEMPLATE_NAME.
 
 Запуск:  streamlit run app.py
 Зависимости: streamlit, openpyxl, pypdf
@@ -28,7 +29,9 @@ warnings.filterwarnings("ignore")
 
 JOURNAL_SHEET = "НЕОПРЕДЕЛ"
 JCOL = "E"                     # колонка замеров на листе журнала
-TEMPLATE_NAME = "template_m3.xlsx"
+CAT = "M3"                     # категория ТС этого приложения
+TEMPLATE_NAME = "template_%s.xlsx" % CAT.lower()
+CAT_NOTE = " (городской, межгородской)"   # уточнение категории для подписи на сайте
 PROTO_REF = ("48-04", "F1")
 ID_REF = "E1"                  # «ID №…» на листе журнала = название PDF-файла    # «Приложение к протоколу №…» (на него ссылаются все расчётные листы)
 
@@ -133,8 +136,14 @@ MONTHS = ["января", "февраля", "марта", "апреля", "ма�
           "августа", "сентября", "октября", "ноября", "декабря"]
 
 
+LAYOUT = {}   # раскладка, найденная по подписям текущего шаблона (build_layout)
+
+
 def all_blocks():
-    """Все блоки замеров журнала: ключ -> (подпись, первая строка)."""
+    """Все блоки замеров журнала: ключ -> (подпись, первая строка).
+    Если шаблон уже прочитан — раскладка по его подписям, иначе — раскладка по умолчанию."""
+    if LAYOUT:
+        return dict(LAYOUT)
     res = dict(SIMPLE)
     for k, (label, rows) in LAMPS.items():
         for pos, row in rows.items():
@@ -404,7 +413,7 @@ def param_value(p):
 
 
 # --------------------------------------------------------------------------
-# Сопоставление параметров протокола с блоками журнала M3
+# Сопоставление параметров протокола с блоками журнала
 # --------------------------------------------------------------------------
 def detect_lamp(n):
     # «до задней/от передней оконечности ТС» — это про длину, а не про передний/задний огонь
@@ -441,7 +450,7 @@ def detect_lamp(n):
 
 
 def lamp_pos(n):
-    if "между сигналом торможения" in n:
+    if "между сигналом торможения" in n or "до сигнала торможения" in n:
         return "brake"
     if "от передней части атс" in n:
         return "len"
@@ -451,12 +460,14 @@ def lamp_pos(n):
         return "bot"
     if "между крайними внутренними" in n:
         return "betw"
-    if "габарита кузова по ширине" in n:
+    if "габарита кузова по ширине" in n or ("по ширине" in n and "габарит" in n):
         return "width"
     if "по длине" in n and "спереди" in n:
         return "flen"
     if "задней оконечност" in n:
         return "rlen"
+    if "по длине" in n:
+        return "len"
     return None
 
 
@@ -493,17 +504,19 @@ def classify(p, ctx):
         p["_lamp"] = lamp
         if lamp and pos:
             seen.add((lamp, pos))
-        if lamp and pos and pos in LAMPS[lamp][1]:
+        if lamp and pos:
             return "%s|%s" % (lamp, pos)
         return None
     ctx["lamp"] = None
 
     # ---------------- контекст дверей / ступенек / огнетушителя
     short = is_short(n)
-    if "двер" in n and "служебн" in n:
+    if "двер" in n and "служебн" in n and "ступен" not in n:
         ctx["door"] = "srv"
-    elif "двер" in n and "аварийн" in n:
+    elif "двер" in n and ("аварийн" in n or "запасн" in n) and "ступен" not in n:
         ctx["door"] = "em"
+    elif "двер" in n and ("одиночн" in n or "двойн" in n) and len(n) <= 60:
+        pass                                  # «Ширина, одиночная дверь» — продолжение предыдущей двери
     elif not short:
         ctx["door"] = None
     if "ступен" in n:
@@ -578,6 +591,12 @@ def classify(p, ctx):
     if "зеркал" in n and ("класса 5" in n or "класса 6" in n or "обзор" in section):
         return "mirror"
     if "масс" in n and ("допустим" in n or "масс" in section):
+        if "25" in n and "ведущ" in n:
+            return "mass_drive25"
+        if "передн" in n and "ос" in n:
+            return "mass_front"
+        if "задн" in n and "ос" in n:
+            return "mass_rear"
         if "ведом" in n:
             return "mass_axle_driven"
         if "ведущ" in n:
@@ -606,8 +625,10 @@ def classify(p, ctx):
             return "ext_h"
         if "ширин" in n:
             return "ext_w"
-    if "наружной ручки" in n and "аварийн" in n:
+    if ("наружн" in n and "ручк" in n) and ("аварийн" in n or "запасн" in n):
         return "em_handle"
+    if "ступен" in n and "высота от земли" in n and "максимум" in n:
+        return "step1_maxh"
     if "длина любого поручня" in n or ("длина" in n and "поручн" in n):
         return "handrail_len"
     if "поручн" in n and ("потолк" in n or "стенок" in n) and "свободное пространство" in n:
@@ -631,17 +652,25 @@ def classify(p, ctx):
     if "аптеч" in n:
         unit = p["rows"][0]["unit"].lower()
         return "first_aid" if unit in ("mm", "мм", "cm", "см") else "first_aid_vol"
-    if "орган управления" in n and "открывания дверей" in n:
+    if "орган управления" in n and ("открывания дверей" in n or "открытия дверей" in n):
         return "door_ctrl"
-    if "аварийного окна" in n and "над уровнем пола" in n:
+    if ("аварийного окна" in n or "запасного окна" in n) and "нижнего края" in n:
         return "em_win_floor"
-    if "аварийн" in n and "окн" in n:
+    if "топливн" in n and "бак" in n:
+        return "fuel_tank"
+    if ("аварийн" in n or "запасн" in n) and "окн" in n and "площад" in n:
+        return None                           # площадь проёма окна — строки в журнале нет
+    if ("аварийн" in n or "запасн" in n) and "окн" in n:
         if "ширин" in n:
             return "em_win_w"
         if "длин" in n or "дилин" in n or "высот" in n:
             return "em_win_l"
     if ctx.get("door") and not ctx.get("ext"):
+        if "двойн" in n:
+            return None                       # двойная дверь — строки в журнале нет (только одиночная)
         if "высот" in n:
+            if ctx["door"] == "srv" and re.search(r"класс\w*\s*в\b", n):
+                return "srv_door_h_b"
             return ctx["door"] + "_door_h"
         if "ширин" in n:
             return ctx["door"] + "_door_w"
@@ -655,25 +684,118 @@ def classify(p, ctx):
         return "seat_g"
     if "глубина подушки" in n:
         return "cushion_depth"
-    if "над каждым местом для сиденья" in n:
+    if "над каждым местом для сиденья" in n or "над каждым сидячим местом" in n:
         return "seat_space_h"
 
     # ---------------- поручни, ограждение
     if "рукоятка располагается по вертикали" in n or ("поручн" in n and "служебн" in n and "двер" in n):
         return "handhold"
+    if "огражден" in n and "вглубь" in n:
+        return None                           # глубина ограждения за ось сиденья — строки в журнале нет
     if "огражден" in n:
         return "guard"
 
     # ---------------- ступеньки
     step = ctx.get("step")
     if step and ("ступен" in n or short) and "наклон" not in n:
-        if "максимальн" in n and "высот" in n:
+        if "высота от земли" in n and "максимум" in n:
+            return "step1_maxh"
+        if ("максимальн" in n or "максимум" in n) and "высот" in n:
             return "step_maxh" if step == "other" else "step1_maxh"
-        if "минимальн" in n and "высот" in n:
+        if ("минимальн" in n or "минимум" in n) and "высот" in n:
             return "step_minh"
-        if "минимальн" in n and "глубин" in n:
+        if ("минимальн" in n or "минимум" in n) and "глубин" in n:
             return "step_mind" if step == "other" else "step1_mind"
     return None
+
+
+# --------------------------------------------------------------------------
+# Раскладка по подписям шаблона (столбец D листа журнала): ключ -> правило
+# Порядок важен: срабатывает первое подходящее правило. Каждый ключ — одна (первая) строка.
+# --------------------------------------------------------------------------
+LABEL_RULES = [
+    ("heat", r"температура поверхности без покрытия|температура любой такой части"),
+    ("length", r"^максимальная длина"), ("width", r"^максимальная ширина"), ("height", r"^максимальная высота"),
+    ("horn", r"звукового сигнального"),
+    ("glass_s", r"не являющиеся ветровыми"), ("glass_w", r"ветровые стекла"),
+    ("vent_speed", r"скорость воздушных потоков"), ("vent_mob", r"подвижность воздуха"),
+    ("ac_cool", r"охлаждение воздуха"),
+    ("ac_speed", r"скорость воздушного потока на выходе из системы кондиционирования"),
+    ("ac_temp", r"температура воздуха на выходе"), ("ac_head", r"скорость воздуха в зоне головы"),
+    ("humidity", r"относительная влажность"), ("duct_temp", r"воздуховодов"),
+    ("plate_a1", r"продольной плоскости"), ("plate_a2", r"опорной плоскости"),
+    ("plate_hmax", r"верхнего края номерного"), ("plate_hmin", r"нижнего края номерного"),
+    ("pict", r"надпись или пиктограмма"), ("digits", r"цифры"),
+    ("fuel_tank", r"топливный бак"),
+    ("first_aid_vol", r"об[ъь][её]м места для аптечки"), ("first_aid", r"аптечки"),
+    ("srv_door_h_b", r"служебная дверь: высота.*класс в"),
+    ("srv_door_h", r"служебная дверь: высота"), ("srv_door_w", r"служебная дверь.*ширина"),
+    ("em_door_h", r"(аварийная|запасная) дверь: высота"), ("em_door_w", r"(аварийная|запасная) дверь.*ширина"),
+    ("em_win2_w", r"(аварийное|запасное) окно \(второе\): ширина"),
+    ("em_win2_l", r"(аварийное|запасное) окно \(второе\): длина"),
+    ("em_win1_w", r"(аварийное|запасное) окно: ширина"), ("em_win1_l", r"(аварийное|запасное) окно: длина"),
+    ("door_ctrl", r"органы открывания"),
+    ("em_win_floor", r"нижнего края (аварийного|запасного) окна"),
+    ("em_handle", r"наружной ручки аварийной"),
+    ("step1_maxh", r"первая ступенька.*максимальная высота"), ("step1_mind", r"первая ступенька.*минимальная глубина"),
+    ("step_maxh", r"другие ступеньки: максимальная высота"), ("step_minh", r"другие ступеньки: минимальная высота"),
+    ("step_mind", r"другие ступеньки: минимальная глубина"),
+    ("step_slope", r"наклон ступеньки"),
+    ("seat_g", r"ширина подушки сиденья g"),
+    ("seat_f", r"ширина сиденья \(сплошное|ширина подушки сиденья с каждой стороны"),
+    ("seat_free", r"ширина свободного пространства|свободная ширина на высоте"),
+    ("cushion_depth", r"глубина подушки"), ("cushion_h", r"высота подушки"),
+    ("seat_space_h", r"свободное пространство над местом"), ("seat_dist", r"расстояние между сиденьями"),
+    ("handhold", r"рукоятка у служебной двери|поручни у служебных дверей"),
+    ("guard", r"ограждение (проёма|проема|лестничного)"),
+    ("handrail_len", r"длина любого поручня"), ("handrail_gap", r"между поручнями"),
+    ("handrail_h", r"горизонтальные поручни"),
+    ("ext_len", r"огнетушителя: длина"), ("ext_h", r"огнетушителя: высота"), ("ext_w", r"огнетушителя: ширина"),
+    ("aisle_long", r"наклон прохода в продольном"), ("aisle_trans", r"наклон прохода в поперечном"),
+    ("mirror", r"зеркала класса"),
+    ("mass_drive25", r"не менее 25"),
+    ("mass_front", r"на переднюю ось"), ("mass_rear", r"на заднюю ось"),
+    ("mass_axle_driven", r"ведомую ось"), ("mass_axle_drive", r"ведущую ось"),
+    ("mass_total", r"максимальная масса|допустимая максимальная масса"),
+    ("g_entry", r"угол въезда"), ("g_exit", r"угол съезда"), ("g_ramp", r"продольной проходимости"),
+    ("g_clear_f", r"просвет под передней осью"), ("g_clear_r", r"просвет под задней осью"),
+    ("g_clear_mid", r"межосевой"),
+]
+_LABEL_RULES_C = [(k, re.compile(fold(p))) for k, p in LABEL_RULES]
+
+# если блока с таким ключом в шаблоне нет — куда ещё можно записать значение
+ALIASES = {
+    "seat_g": ["seat_f"],                      # M2: «ширина подушки сиденья» — одна строка
+    "first_aid_vol": ["first_aid"],            # M2: строки «объём аптечки» нет — в строку «аптечка»
+    "srv_door_h": ["srv_door_h_b"],
+    "mass_axle_driven": ["mass_front"], "mass_axle_drive": ["mass_rear"],
+    "mass_front": ["mass_axle_driven"], "mass_rear": ["mass_axle_drive"],
+}
+COPY_TO = {"mass_axle_drive": "mass_drive25", "mass_rear": "mass_drive25"}   # ведущая ось → и в блок «не менее 25 %»
+
+
+def build_layout(cells):
+    """Найти блоки замеров по подписям шаблона: ключ -> (подпись, первая строка)."""
+    J = cells.get(JOURNAL_SHEET, {})
+    rows = sorted({int(re.sub(r"\D", "", k)) for k in J if k.startswith("D")})
+    layout = {}
+    for r in rows:
+        d = J.get("D%d" % r)
+        e = J.get("%s%d" % (JCOL, r))
+        m = J.get("%s%d" % (JCOL, r + 3))
+        if not isinstance(d, str) or fold(d) in ("ср.знач", "ср.занч") or "решени" in fold(d):
+            continue
+        if e is None or not (isinstance(m, str) and m.startswith("=")):
+            continue
+        n = fold(d)
+        lamp, pos = detect_lamp(n), lamp_pos(n)
+        if lamp and pos:
+            key = "%s|%s" % (lamp, pos)
+        else:
+            key = next((k for k, rx in _LABEL_RULES_C if rx.search(n)), None)
+        if key and key not in layout:
+            layout[key] = (" ".join(d.split()), r)
+    return layout
 
 
 OVERFLOW = {"em_win_w": ("em_win1_w", "em_win2_w"), "em_win_l": ("em_win1_l", "em_win2_l")}
@@ -1219,6 +1341,21 @@ class Evaluator:
         n = name.upper().replace("_XLFN.", "")
         if n in ("TRUE", "FALSE") and not args:
             return n == "TRUE"
+        if n == "MATCH":
+            look, arr = args[0], args[1] if isinstance(args[1], list) else [args[1]]
+            for i, x in enumerate(arr):
+                if (isinstance(x, str) and isinstance(look, str) and x.strip().lower() == look.strip().lower()) or \
+                        (not isinstance(x, str) and not isinstance(look, str) and x is not None and look is not None
+                         and _num(x) == _num(look)):
+                    return float(i + 1)
+            raise XlErr("#N/A")
+        if n == "INDEX":
+            arr = args[0] if isinstance(args[0], list) else [args[0]]
+            i = int(_num(args[1])) if len(args) > 1 else 1
+            if i < 1 or i > len(arr):
+                raise XlErr("#REF!")
+            v = arr[i - 1]
+            return 0.0 if v is None else v
         if n == "COUNT":
             cnt = 0
             for a in args:
@@ -1556,7 +1693,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
              "corr" — «СР.ЗАНЧ» (с поправкой Og'ish) = протоколу."""
     tcells = load_cells(template_bytes)
     if JOURNAL_SHEET not in tcells:
-        raise ValueError("В шаблоне нет листа «%s» — это не шаблон M3." % JOURNAL_SHEET)
+        raise ValueError("В шаблоне нет листа «%s» — это не шаблон %s." % (JOURNAL_SHEET, CAT))
     tbook = Book(tcells)
     blocks = all_blocks()
     seeds, bias = {}, {}
@@ -1709,6 +1846,22 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
         if ok:
             out[pr_path] = x.encode("utf8")
             pr_cells[pr_ref] = txt
+    # --- лист «Масса»: тип ТС для нормы (двухосные / трехосные / сочлененные / четырехосные) — по протоколу
+    mass_cells = {}
+    ms_path = next((p for n, p in paths if n == "Масса"), None)
+    msc = tcells.get("Масса", {})
+    if ms_path and "mass_total" in values and isinstance(msc.get("D6"), str):
+        nm = fold(values["mass_total"]["name"])
+        opt = {k: msc.get(k) for k in ("K7", "K8", "K9", "K10")}
+        choice = (opt["K9"] if "сочлен" in nm else opt["K10"] if "четырехос" in nm else
+                  opt["K8"] if "трехос" in nm else opt["K7"] if "двухос" in nm else None)
+        if isinstance(choice, str) and choice != msc.get("D6"):
+            x = (out[ms_path] if ms_path in out else zin.read(ms_path)).decode("utf8")
+            x, ok = set_str(x, "D6", choice)
+            if ok:
+                out[ms_path] = x.encode("utf8")
+                mass_cells["D6"] = choice
+                log["notes_mass"] = "лист «Масса»: тип ТС «%s»" % choice
     for n, p in paths:
         if p not in out:
             out[p] = zin.read(p)
@@ -1735,6 +1888,8 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
             allc[pr_sheet] = dict(allc[pr_sheet], **pr_cells)
         for sh_, cc in ub_cells.items():
             allc[sh_] = dict(allc[sh_], **cc)
+        if mass_cells:
+            allc["Масса"] = dict(allc["Масса"], **mass_cells)
         book = Book(allc)
         for n, p in paths:
             out[p] = inject_values(out[p].decode("utf8"), n, book).encode("utf8")
@@ -1777,7 +1932,30 @@ def process(pdf_bytes, template_bytes, mode="corr", file_id=""):
     params = parse_params(raw)
     if not params:
         raise ValueError("В протоколе не удалось найти таблицы результатов.")
+    global LAYOUT
+    LAYOUT = {}
+    LAYOUT = build_layout(load_cells(template_bytes))
     values, unmatched, dup, trace = map_params(params)
+    placed = {}
+    for key, v in values.items():
+        target = key if key in LAYOUT else next((a for a in ALIASES.get(key, []) if a in LAYOUT and a not in values
+                                                 and a not in placed), None)
+        if target is None and COPY_TO.get(key) in LAYOUT and COPY_TO[key] not in values \
+                and COPY_TO[key] not in placed:
+            target = COPY_TO[key]
+        if target is None:
+            v["_nospace"] = True
+            continue
+        placed[target] = v
+        cp = COPY_TO.get(key)
+        if cp and cp in LAYOUT and cp not in values:
+            placed.setdefault(cp, v)
+    nospace_names = {v["name"] for v in values.values() if v.get("_nospace")}
+    for p in params:
+        if p["name"] in nospace_names and p not in unmatched:
+            unmatched.append(p)
+    trace = [(p, (k if not (k and values.get(k, {}).get("_nospace")) else None)) for p, k in trace]
+    values = placed
     data, log = fill_workbook(template_bytes, meta, values, mode)
     log["unmatched"] = [p["name"] for p in unmatched]
     log["trace"] = [(p["section"], p["name"], key, p["rows"][0]["final"]) for p, key in trace]
@@ -1814,7 +1992,7 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 def out_name(meta):
     if meta.get("id"):
         return "%s.xlsx" % safe_name(meta["id"])
-    return "Журнал_M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
+    return "Журнал_%s_%s_%s_%s.xlsx" % (CAT, safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
 
 
 def problems(meta, log):
@@ -1832,6 +2010,8 @@ def problems(meta, log):
         res.append("нераспознанные огни")
     if not log["filled"]:
         res.append("нет пунктов для журнала")
+    if meta.get("category") and meta["category"] != CAT:
+        res.append("категория в протоколе %s, а журнал %s" % (meta["category"], CAT))
     if not meta["brand"] or not meta["model"]:
         res.append("нет марки/модели")
     if not meta["vin"]:
@@ -1869,20 +2049,20 @@ def make_zip(results):
 
 
 def main():
-    st.set_page_config(page_title="Журнал M3", page_icon="🚌", layout="centered")
+    st.set_page_config(page_title="Журнал %s" % CAT, page_icon="🚌", layout="centered")
     st.markdown(
         "<style>.stButton>button,.stDownloadButton>button{min-height:3rem;font-size:1.05rem}"
         ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
         unsafe_allow_html=True,
     )
-    st.title("🚌 Журнал испытаний M3")
-    st.caption("Автобусы категории M3 (городские, междугородние). Загрузите один или сразу несколько PDF-протоколов — "
+    st.title("🚌 Журнал испытаний %s" % CAT)
+    st.caption("Автобусы категории %s%s. Загрузите один или сразу несколько PDF-протоколов — " % (CAT, CAT_NOTE) +
                "получите заполненные журналы по шаблону.")
 
     tpl_path = Path(__file__).resolve().parent / TEMPLATE_NAME
     template_bytes = tpl_path.read_bytes() if tpl_path.exists() else None
     if template_bytes is None:
-        up_t = st.file_uploader("Шаблон журнала M3 (template_m3.xlsx)", type=["xlsx"], key="tpl")
+        up_t = st.file_uploader("Шаблон журнала %s (%s)" % (CAT, TEMPLATE_NAME), type=["xlsx"], key="tpl")
         if up_t is not None:
             template_bytes = up_t.getvalue()
     else:
@@ -1918,7 +2098,7 @@ def main():
         st.session_state["batch"] = results
 
     if template_bytes is None:
-        st.info("Положите template_m3.xlsx рядом с app.py или загрузите шаблон выше.")
+        st.info("Положите %s рядом с app.py или загрузите шаблон выше." % TEMPLATE_NAME)
     elif not pdfs:
         st.info("Загрузите PDF-протокол(ы).")
 
@@ -1941,7 +2121,7 @@ def main():
     st.success("Готово: %d из %d" % (len(ok), len(results)))
     if ok:
         st.download_button("⬇️ Скачать все журналы (.zip, %d)" % len(ok), data=make_zip(results),
-                           file_name="Журналы_M3.zip", mime="application/zip", use_container_width=True)
+                           file_name="Журналы_%s.zip" % CAT, mime="application/zip", use_container_width=True)
     st.subheader("Сводка")
     for n, r in enumerate(results):
         if r["err"]:
@@ -1952,7 +2132,8 @@ def main():
         line = "**%s** — %s %s · заполнено %d · U совпала %d/%d" % (
             meta.get("id") or r["name"], meta["brand"] or "?", meta["model"] or "?", len(log["filled"]),
             sum(1 for x in log.get("u_fit", []) if x[4]), len(log.get("u_fit", [])))
-        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки", "нет пунктов")) for x in pr)
+        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки", "нет пунктов", "категория"))
+                   for x in pr)
         (st.warning if hard else st.success)(("⚠️ " if hard else "✅ ") + line +
                                              ("\n\n" + "; ".join(pr) if pr else ""))
         st.download_button("⬇️ %s" % out_name(meta), data=r["data"], file_name=out_name(meta),
@@ -1977,8 +2158,11 @@ def show_details(meta, log):
     if len(meta.get("vins", [])) > 1:
         st.warning("В протоколе несколько VIN, в журнал записан первый. Все: " + ", ".join(meta["vins"]))
     if not log["filled"]:
-        st.error("В протоколе нет ни одного пункта, для которого есть место в журнале M3 — заполнять нечего. "
+        st.error("В протоколе нет ни одного пункта, для которого есть место в журнале %s — заполнять нечего. " % CAT +
                  "Пункты протокола: " + "; ".join(x[:80] for x in log["unmatched"]))
+    if meta.get("category") and meta["category"] != CAT:
+        st.error("В протоколе категория %s, а это журнал %s — проверьте, тот ли шаблон (приложение) выбран."
+                 % (meta["category"], CAT))
     if not meta["brand"] or not meta["model"]:
         st.warning("Марка/модель не распознаны — впишите вручную (НЕОПРЕДЕЛ!D10, D11).")
     if not meta["vin"]:
