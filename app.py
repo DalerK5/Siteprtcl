@@ -274,6 +274,11 @@ def parse_params(raw):
             if not mm:
                 continue
             toks = mm.group(2).split()
+            if (len(toks) >= 3 and all(re.fullmatch(r"-?\d+(?:[.,]+\d+)?,?", t) for t in toks)):
+                # строка без единиц: «1 0,448 0,005 0,448 M» — измерено, U, итог
+                rows.append({"meas": toks[0].rstrip(","), "final": toks[-1].rstrip(","), "unit": "",
+                             "concl": mm.group(3), "unc": toks[1].rstrip(",")})
+                continue
             if len(toks) >= 3 and re.fullmatch(r"-?[\d.,]+", toks[0]) and re.fullmatch(r"-?[\d.,]+", toks[-2]):
                 nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]+\d+)?,?", t)]
                 unc = nums[1] if len(nums) >= 3 else None

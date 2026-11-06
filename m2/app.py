@@ -333,6 +333,11 @@ def parse_params(raw):
             if not mm:
                 continue
             toks = mm.group(2).split()
+            if (len(toks) >= 3 and all(re.fullmatch(r"-?\d+(?:[.,]+\d+)?,?", t) for t in toks)):
+                # строка без единиц: «1 0,448 0,005 0,448 M» — измерено, U, итог
+                rows.append({"meas": toks[0].rstrip(","), "final": toks[-1].rstrip(","), "unit": "",
+                             "concl": mm.group(3), "unc": toks[1].rstrip(",")})
+                continue
             if len(toks) >= 3 and re.fullmatch(r"-?[\d.,]+", toks[0]) and re.fullmatch(r"-?[\d.,]+", toks[-2]):
                 nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]+\d+)?,?", t)]
                 unc = nums[1] if len(nums) >= 3 else None
@@ -657,9 +662,16 @@ def classify(p, ctx):
     if ("аварийного окна" in n or "запасного окна" in n) and "нижнего края" in n:
         return "em_win_floor"
     if "топливн" in n and "бак" in n:
+        ctx["tank"] = True
         return "fuel_tank"
+    if ctx.pop("tank", False) and "задней оконечност" in n:
+        return "fuel_tank_rear"             # «… и менее 30 cm от задней оконечности ТС» — продолжение про бак
+    if "предназначенном для ног" in n or ("для ног" in n and "уровня пола" in n):
+        return "legroom_h"
+    if "дымност" in n:
+        return "smoke"
     if ("аварийн" in n or "запасн" in n) and "окн" in n and "площад" in n:
-        return None                           # площадь проёма окна — строки в журнале нет
+        return "em_win_area"
     if ("аварийн" in n or "запасн" in n) and "окн" in n:
         if "ширин" in n:
             return "em_win_w"
@@ -667,7 +679,7 @@ def classify(p, ctx):
             return "em_win_l"
     if ctx.get("door") and not ctx.get("ext"):
         if "двойн" in n:
-            return None                       # двойная дверь — строки в журнале нет (только одиночная)
+            return "srv_door_w2"
         if "высот" in n:
             if ctx["door"] == "srv" and re.search(r"класс\w*\s*в\b", n):
                 return "srv_door_h_b"
@@ -691,7 +703,7 @@ def classify(p, ctx):
     if "рукоятка располагается по вертикали" in n or ("поручн" in n and "служебн" in n and "двер" in n):
         return "handhold"
     if "огражден" in n and "вглубь" in n:
-        return None                           # глубина ограждения за ось сиденья — строки в журнале нет
+        return "guard_depth"
     if "огражден" in n:
         return "guard"
 
@@ -726,17 +738,19 @@ LABEL_RULES = [
     ("plate_a1", r"продольной плоскости"), ("plate_a2", r"опорной плоскости"),
     ("plate_hmax", r"верхнего края номерного"), ("plate_hmin", r"нижнего края номерного"),
     ("pict", r"надпись или пиктограмма"), ("digits", r"цифры"),
-    ("fuel_tank", r"топливный бак"),
+    ("fuel_tank_rear", r"топливный бак.*задней оконечност"), ("fuel_tank", r"топливный бак"),
     ("first_aid_vol", r"об[ъь][её]м места для аптечки"), ("first_aid", r"аптечки"),
     ("srv_door_h_b", r"служебная дверь: высота.*класс в"),
-    ("srv_door_h", r"служебная дверь: высота"), ("srv_door_w", r"служебная дверь.*ширина"),
+    ("srv_door_h", r"служебная дверь: высота"), ("srv_door_w2", r"служебная дверь \(двойная\).*ширина"),
+    ("srv_door_w", r"служебная дверь.*ширина"),
     ("em_door_h", r"(аварийная|запасная) дверь: высота"), ("em_door_w", r"(аварийная|запасная) дверь.*ширина"),
+    ("em_win_area", r"окно: площадь"),
     ("em_win2_w", r"(аварийное|запасное) окно \(второе\): ширина"),
     ("em_win2_l", r"(аварийное|запасное) окно \(второе\): длина"),
     ("em_win1_w", r"(аварийное|запасное) окно: ширина"), ("em_win1_l", r"(аварийное|запасное) окно: длина"),
     ("door_ctrl", r"органы открывания"),
     ("em_win_floor", r"нижнего края (аварийного|запасного) окна"),
-    ("em_handle", r"наружной ручки аварийной"),
+    ("em_handle", r"наружной ручки (аварийной|запасной)"),
     ("step1_maxh", r"первая ступенька.*максимальная высота"), ("step1_mind", r"первая ступенька.*минимальная глубина"),
     ("step_maxh", r"другие ступеньки: максимальная высота"), ("step_minh", r"другие ступеньки: минимальная высота"),
     ("step_mind", r"другие ступеньки: минимальная глубина"),
@@ -745,14 +759,16 @@ LABEL_RULES = [
     ("seat_f", r"ширина сиденья \(сплошное|ширина подушки сиденья с каждой стороны"),
     ("seat_free", r"ширина свободного пространства|свободная ширина на высоте"),
     ("cushion_depth", r"глубина подушки"), ("cushion_h", r"высота подушки"),
+    ("legroom_h", r"над местом для ног"),
     ("seat_space_h", r"свободное пространство над местом"), ("seat_dist", r"расстояние между сиденьями"),
     ("handhold", r"рукоятка у служебной двери|поручни у служебных дверей"),
+    ("guard_depth", r"ограждение.*глубина за"),
     ("guard", r"ограждение (проёма|проема|лестничного)"),
     ("handrail_len", r"длина любого поручня"), ("handrail_gap", r"между поручнями"),
     ("handrail_h", r"горизонтальные поручни"),
     ("ext_len", r"огнетушителя: длина"), ("ext_h", r"огнетушителя: высота"), ("ext_w", r"огнетушителя: ширина"),
     ("aisle_long", r"наклон прохода в продольном"), ("aisle_trans", r"наклон прохода в поперечном"),
-    ("mirror", r"зеркала класса"),
+    ("mirror", r"зеркала класса"), ("smoke", r"дымность"),
     ("mass_drive25", r"не менее 25"),
     ("mass_front", r"на переднюю ось"), ("mass_rear", r"на заднюю ось"),
     ("mass_axle_driven", r"ведомую ось"), ("mass_axle_drive", r"ведущую ось"),
