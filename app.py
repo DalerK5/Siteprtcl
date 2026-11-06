@@ -134,6 +134,13 @@ def decimals_of(s):
     return len(s.split(".")[1]) if "." in s else 0
 
 
+def clean_brand(b):
+    """Сократить марку: без пробега/запаса хода («530 км»), года («2026») и «Model …» после них."""
+    b = re.split(r"\s*(?:\b\d+[.,]?\d*\s*(?:км|km)\b|\b(?:19|20)\d{2}\b|\b(?:model|модел\w*)\b)", b,
+                 maxsplit=1, flags=re.I)[0]
+    return b.strip(" ,.;-") or b
+
+
 def parse_meta(raw):
     flat = norm(raw)
     meta = {}
@@ -170,6 +177,7 @@ def parse_meta(raw):
                       flat, re.I)
         if m:
             meta["model"] = m.group(1).strip(" ,.;")
+    meta["brand"] = clean_brand(meta["brand"]) if meta["brand"] else ""
     m = (re.search(r"(?:VIN|идент\.?|идентификационный)\s*(?:№|N|номер)?\s*[:\-]?\s*([A-HJ-NPR-Za-hj-npr-z0-9]{17})\b", flat)
          or re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", flat))
     meta["vin"] = m.group(1).upper() if m else ""
