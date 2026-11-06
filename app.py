@@ -250,7 +250,7 @@ def parse_params(raw):
                 continue
             toks = mm.group(2).split()
             if len(toks) >= 3 and re.fullmatch(r"-?[\d.,]+", toks[0]) and re.fullmatch(r"-?[\d.,]+", toks[-2]):
-                nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]\d+)?,?", t)]
+                nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]+\d+)?,?", t)]
                 unc = nums[1] if len(nums) >= 3 else None
                 rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3),
                              "unc": unc})
@@ -1012,6 +1012,8 @@ class Evaluator:
 
     def call(self, name, args):
         n = name.upper().replace("_XLFN.", "")
+        if n in ("TRUE", "FALSE") and not args:
+            return n == "TRUE"
         if n == "COUNT":
             cnt = 0
             for a in args:
