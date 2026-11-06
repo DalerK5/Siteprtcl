@@ -156,6 +156,10 @@ def parse_meta(raw):
             r"марк[аиеу]?\s+([^,«»\"”]+?)\s+модел[ьиюе]?\s+([^,«»\"”]+?)\s*(?:,|VIN|идент|$)",
             # «markasi YUTONG, model: ZK6890HQG,»
             r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s*:?\s*([^,\s]+(?:\s[^,\s:]+)?)\s*(?:,|VIN)",
+            # «ZEEKR tovar belgisi ostidagi 9X Ultra rusumli»
+            r"([A-Za-zА-Яа-я0-9\-]+)\s+tovar\s+belgisi\s+ostidagi\s+(.+?)\s+rusumli",
+            # «X markali Y rusumli»
+            r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+rusumli",
             # «FOTON markali BJ6931 modelli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
             # «marka HONGQI E-QM5, VIN:» — марка = первое слово, модель = остальное
@@ -331,6 +335,8 @@ def param_value(p):
 # Сопоставление параметров протокола с блоками журнала
 # --------------------------------------------------------------------------
 def detect_lamp(n):
+    if "между сигналом торможения" in n:
+        return "rear_fog"
     if "от передней части атс" in n:
         return "side"
     if "ближнего" in n and "фар" in n:
@@ -357,6 +363,8 @@ def detect_lamp(n):
 
 
 def lamp_col(n):
+    if "между сигналом торможения" in n:
+        return "H"                       # задний ПТФ: расстояние до сигнала торможения
     if "от передней части атс" in n:
         return "H"
     if "верхней точки" in n:
@@ -1396,10 +1404,10 @@ def fill_workbook(template_bytes, meta, values):
         if not ok:
             log["missing_cells"].append("C2")
     for ref, v in (("E11", meta["brand"] + " "), ("E12", meta["model"]), ("E15", meta["vin"] + " ")):
-        if v.strip():
-            j, ok = set_str(j, ref, v)
-            if not ok:
-                log["missing_cells"].append(ref)
+        # не найдено в протоколе — ячейка пустая (а не марка/модель прошлой машины из шаблона)
+        j, ok = set_str(j, ref, v if v.strip() else "")
+        if not ok:
+            log["missing_cells"].append(ref)
     if meta.get("id"):
         j, ok = set_str(j, ID_REF, "ID № %s" % meta["id"])
         if not ok:
