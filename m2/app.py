@@ -511,10 +511,12 @@ def classify(p, ctx):
 
     # ---------------- контекст дверей / ступенек / огнетушителя
     short = is_short(n)
-    if "двер" in n and "служебн" in n:
+    if "двер" in n and "служебн" in n and "ступен" not in n:
         ctx["door"] = "srv"
-    elif "двер" in n and ("аварийн" in n or "запасн" in n):
+    elif "двер" in n and ("аварийн" in n or "запасн" in n) and "ступен" not in n:
         ctx["door"] = "em"
+    elif "двер" in n and ("одиночн" in n or "двойн" in n) and len(n) <= 60:
+        pass                                  # «Ширина, одиночная дверь» — продолжение предыдущей двери
     elif not short:
         ctx["door"] = None
     if "ступен" in n:
@@ -623,8 +625,10 @@ def classify(p, ctx):
             return "ext_h"
         if "ширин" in n:
             return "ext_w"
-    if "наружной ручки" in n and "аварийн" in n:
+    if ("наружн" in n and "ручк" in n) and ("аварийн" in n or "запасн" in n):
         return "em_handle"
+    if "ступен" in n and "высота от земли" in n and "максимум" in n:
+        return "step1_maxh"
     if "длина любого поручня" in n or ("длина" in n and "поручн" in n):
         return "handrail_len"
     if "поручн" in n and ("потолк" in n or "стенок" in n) and "свободное пространство" in n:
@@ -648,18 +652,22 @@ def classify(p, ctx):
     if "аптеч" in n:
         unit = p["rows"][0]["unit"].lower()
         return "first_aid" if unit in ("mm", "мм", "cm", "см") else "first_aid_vol"
-    if "орган управления" in n and "открывания дверей" in n:
+    if "орган управления" in n and ("открывания дверей" in n or "открытия дверей" in n):
         return "door_ctrl"
-    if ("аварийного окна" in n or "запасного окна" in n) and "над уровнем пола" in n:
+    if ("аварийного окна" in n or "запасного окна" in n) and "нижнего края" in n:
         return "em_win_floor"
     if "топливн" in n and "бак" in n:
         return "fuel_tank"
+    if ("аварийн" in n or "запасн" in n) and "окн" in n and "площад" in n:
+        return None                           # площадь проёма окна — строки в журнале нет
     if ("аварийн" in n or "запасн" in n) and "окн" in n:
         if "ширин" in n:
             return "em_win_w"
         if "длин" in n or "дилин" in n or "высот" in n:
             return "em_win_l"
     if ctx.get("door") and not ctx.get("ext"):
+        if "двойн" in n:
+            return None                       # двойная дверь — строки в журнале нет (только одиночная)
         if "высот" in n:
             if ctx["door"] == "srv" and re.search(r"класс\w*\s*в\b", n):
                 return "srv_door_h_b"
@@ -676,23 +684,27 @@ def classify(p, ctx):
         return "seat_g"
     if "глубина подушки" in n:
         return "cushion_depth"
-    if "над каждым местом для сиденья" in n:
+    if "над каждым местом для сиденья" in n or "над каждым сидячим местом" in n:
         return "seat_space_h"
 
     # ---------------- поручни, ограждение
     if "рукоятка располагается по вертикали" in n or ("поручн" in n and "служебн" in n and "двер" in n):
         return "handhold"
+    if "огражден" in n and "вглубь" in n:
+        return None                           # глубина ограждения за ось сиденья — строки в журнале нет
     if "огражден" in n:
         return "guard"
 
     # ---------------- ступеньки
     step = ctx.get("step")
     if step and ("ступен" in n or short) and "наклон" not in n:
-        if "максимальн" in n and "высот" in n:
+        if "высота от земли" in n and "максимум" in n:
+            return "step1_maxh"
+        if ("максимальн" in n or "максимум" in n) and "высот" in n:
             return "step_maxh" if step == "other" else "step1_maxh"
-        if "минимальн" in n and "высот" in n:
+        if ("минимальн" in n or "минимум" in n) and "высот" in n:
             return "step_minh"
-        if "минимальн" in n and "глубин" in n:
+        if ("минимальн" in n or "минимум" in n) and "глубин" in n:
             return "step_mind" if step == "other" else "step1_mind"
     return None
 
@@ -754,6 +766,7 @@ _LABEL_RULES_C = [(k, re.compile(fold(p))) for k, p in LABEL_RULES]
 # если блока с таким ключом в шаблоне нет — куда ещё можно записать значение
 ALIASES = {
     "seat_g": ["seat_f"],                      # M2: «ширина подушки сиденья» — одна строка
+    "first_aid_vol": ["first_aid"],            # M2: строки «объём аптечки» нет — в строку «аптечка»
     "srv_door_h": ["srv_door_h_b"],
     "mass_axle_driven": ["mass_front"], "mass_axle_drive": ["mass_rear"],
     "mass_front": ["mass_axle_driven"], "mass_rear": ["mass_axle_drive"],
