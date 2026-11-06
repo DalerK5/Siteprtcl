@@ -75,11 +75,36 @@ SIMPLE = {
     "step_minh": ("Другие ступеньки: мин. высота", 396),
     "step_mind": ("Другие ступеньки: мин. глубина", 401),
     "seat_f": ("Ширина сиденья F", 406),
-    "seat_g": ("Ширина свободного пространства G", 411),
+    "seat_g": ("Ширина подушки сиденья G", 411),
     "cushion_depth": ("Глубина подушки сиденья", 416),
     "seat_space_h": ("Пространство над сиденьем: высота", 421),
     "handhold": ("Поручни у служебных дверей", 426),
     "guard": ("Ограждение проёмов для ступенек", 431),
+    # --- дополнительные блоки шаблона (с строки 493)
+    "mirror": ("Зеркала класса 5 и 6: высота от дороги", 493),
+    "mass_total": ("Технически допустимая максимальная масса", 498),
+    "mass_axle_driven": ("Масса на одиночную ведомую ось", 503),
+    "mass_axle_drive": ("Масса на одиночную ведущую ось", 508),
+    "g_entry": ("Угол въезда", 513),
+    "g_exit": ("Угол съезда", 518),
+    "g_ramp": ("Угол продольной проходимости", 523),
+    "g_clear_f": ("Дорожный просвет под передней осью", 528),
+    "g_clear_r": ("Дорожный просвет под задней осью", 533),
+    "g_clear_mid": ("Межосевой дорожный просвет", 538),
+    "seat_free": ("Ширина свободного пространства места сиденья", 543),
+    "handrail_len": ("Длина поручня", 548),
+    "handrail_gap": ("Зазор между поручнем и потолком/стенкой", 553),
+    "handrail_h": ("Горизонтальные поручни: высота от пола", 558),
+    "ext_len": ("Место для огнетушителя: длина", 563),
+    "ext_h": ("Место для огнетушителя: высота", 568),
+    "ext_w": ("Место для огнетушителя: ширина", 573),
+    "em_handle": ("Высота наружной ручки аварийной двери", 578),
+    "first_aid_vol": ("Объём места для аптечки", 583),
+    "aisle_long": ("Наклон прохода: продольный", 588),
+    "aisle_trans": ("Наклон прохода: поперечный", 593),
+    "step_slope": ("Наклон ступеньки", 598),
+    "cushion_h": ("Высота подушки сиденья", 603),
+    "seat_dist": ("Расстояние между сиденьями", 608),
 }
 # Световые приборы (лист «48-04»): огонь -> (подпись, {позиция: строка})
 LAMPS = {
@@ -94,14 +119,14 @@ LAMPS = {
     "rear_fog": ("Задний противотуманный фонарь", {"top": 164, "bot": 169, "brake": 174}),
     "refl_rear": ("Световозвращатели задние", {"top": 179, "bot": 184, "betw": 189, "width": 194}),
     "refl_front": ("Световозвращатели передние", {"top": 199, "bot": 204, "betw": 209, "width": 214}),
-    # в журнале M2–M3 для них места нет — распознаём, чтобы не путать со следующими пунктами
-    "fog_front": ("Передняя противотуманная фара", {}),
-    "side_pos": ("Боковые габаритные огни", {}),
-    "refl_side": ("Световозвращатели боковые", {}),
+    "fog_front": ("Передняя противотуманная фара", {"top": 438, "bot": 443, "width": 448}),
+    "side_pos": ("Боковые габаритные огни", {"top": 453, "bot": 458, "flen": 463, "rlen": 468}),
+    "refl_side": ("Световозвращатели боковые", {"top": 473, "bot": 478, "flen": 483, "rlen": 488}),
 }
 POS_LABEL = {"top": "верхняя точка", "bot": "нижняя точка", "betw": "между внутренними точками",
              "width": "до габарита по ширине", "len": "от передней части АТС",
-             "brake": "до сигнала торможения"}
+             "brake": "до сигнала торможения", "flen": "от передней оконечности ТС",
+             "rlen": "до задней оконечности ТС"}
 DIM_KEYS = ("length", "width", "height")   # в журнале — m (как в протоколе)
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
@@ -150,6 +175,13 @@ def decimals_of(s):
     return len(s.split(".")[1]) if "." in s else 0
 
 
+def clean_brand(b):
+    """Сократить марку: без пробега/запаса хода («530 км»), года («2026») и «Model …» после них."""
+    b = re.split(r"\s*(?:\b\d+[.,]?\d*\s*(?:км|km)\b|\b(?:19|20)\d{2}\b|\b(?:model|модел\w*)\b)", b,
+                 maxsplit=1, flags=re.I)[0]
+    return b.strip(" ,.;-") or b
+
+
 def parse_meta(raw):
     flat = norm(raw)
     meta = {}
@@ -176,9 +208,20 @@ def parse_meta(raw):
                 meta["brand"] = meta["brand"] or m.group(1).strip()
                 meta["model"] = meta["model"] or m.group(2).strip()
                 break
+    # общий случай без кавычек: «марка GAC AION I60 530 км, модель «…»», «Марки X.Модель Y. VIN»
+    if not meta["brand"]:
+        m = re.search(r"\bмарк[аиеу]?\s*:?\s+([^«»\"”]{1,80}?)\s*[,.;]?\s*модел[ьиюе]", flat, re.I)
+        if m:
+            meta["brand"] = m.group(1).strip(" ,.;")
+    if not meta["model"]:
+        m = re.search(r"\bмодел[ьиюе]?\s*:?\s*[«\"“]?\s*([^,«»\"”]{1,60}?)\s*[»\"”]?\s*[,.;]?\s*(?:VIN|идент|$)",
+                      flat, re.I)
+        if m:
+            meta["model"] = m.group(1).strip(" ,.;")
     m = (re.search(r"\b[MМ]([123])\s*toifa", flat)
          or re.search(r"категори[яи][^)]{0,40}?\b[MМ]([123])\b", flat))
     meta["category"] = "M" + m.group(1) if m else ""
+    meta["brand"] = clean_brand(meta["brand"]) if meta["brand"] else ""
     vins = []
     for mm in re.finditer(r"(?:VIN|идент\.?|идентификационный)[^A-Z0-9]{0,25}((?:[A-HJ-NPR-Z0-9]{17}[\s,;]*)+)", flat):
         for v in re.findall(r"[A-HJ-NPR-Z0-9]{17}", mm.group(1)):
@@ -275,7 +318,7 @@ def parse_params(raw):
                 continue
             toks = mm.group(2).split()
             if len(toks) >= 3 and re.fullmatch(r"-?[\d.,]+", toks[0]) and re.fullmatch(r"-?[\d.,]+", toks[-2]):
-                nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]\d+)?,?", t)]
+                nums = [t.rstrip(",") for t in toks if re.fullmatch(r"-?\d+(?:[.,]+\d+)?,?", t)]
                 unc = nums[1] if len(nums) >= 3 else None
                 rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3),
                              "unc": unc})
@@ -340,6 +383,8 @@ def param_value(p):
 # Сопоставление параметров протокола с блоками журнала M2–M3
 # --------------------------------------------------------------------------
 def detect_lamp(n):
+    # «до задней/от передней оконечности ТС» — это про длину, а не про передний/задний огонь
+    n = re.sub(r"(передн|задн)\w*\s+оконечност\w*", "оконечность", n)
     if "между сигналом торможения" in n:
         return "rear_fog"
     if "от передней части атс" in n:
@@ -384,6 +429,10 @@ def lamp_pos(n):
         return "betw"
     if "габарита кузова по ширине" in n:
         return "width"
+    if "по длине" in n and "спереди" in n:
+        return "flen"
+    if "задней оконечност" in n:
+        return "rlen"
     return None
 
 
@@ -393,7 +442,7 @@ LAMP_ORDER = ["dipped", "fog_front", "reverse", "pos_front", "pos_rear", "brake"
 
 def is_short(n):
     """Короткое продолжение предыдущего пункта («высота», «ширина», «минимальная глубина»…)."""
-    return len(n) <= 40 and not re.search(r"сиден|подушк|поручн|огнетуш|аптеч|окн|ступен", n)
+    return len(n) <= 40 and not re.search(r"сиден|подушк|поручн|огнетуш|аптеч|окн|ступен|двер|прохода", n)
 
 
 def classify(p, ctx):
@@ -443,6 +492,10 @@ def classify(p, ctx):
         ctx["ext"] = True
     elif not short or "двер" in n:
         ctx["ext"] = False
+    if "наклон прохода" in n:
+        ctx["aisle"] = True
+    elif not short:
+        ctx["aisle"] = False
 
     # ---------------- отопление, габариты, сигнал, стёкла
     if "температура поверхности без покрытия" in n or "температура любой такой части" in n:
@@ -497,13 +550,63 @@ def classify(p, ctx):
             return "plate_hmax"
         return None
 
+    # ---------------- зеркала, масса, категория G
+    if "зеркал" in n and ("класса 5" in n or "класса 6" in n or "обзор" in section):
+        return "mirror"
+    if "масс" in n and ("допустим" in n or "масс" in section):
+        if "ведом" in n:
+            return "mass_axle_driven"
+        if "ведущ" in n:
+            return "mass_axle_drive"
+        if "ось" not in n and "оси" not in n:
+            return "mass_total"
+    if "угол въезда" in n:
+        return "g_entry"
+    if "угол съезда" in n:
+        return "g_exit"
+    if "продольной проходимости" in n:
+        return "g_ramp"
+    if "просвет" in n:
+        if "межосев" in n:
+            return "g_clear_mid"
+        if "передней ос" in n:
+            return "g_clear_f"
+        if "задней ос" in n:
+            return "g_clear_r"
+
+    # ---------------- огнетушитель, поручни, проход, сиденья (дополнительные блоки)
+    if ctx.get("ext"):
+        if "длин" in n:
+            return "ext_len"
+        if "высот" in n:
+            return "ext_h"
+        if "ширин" in n:
+            return "ext_w"
+    if "наружной ручки" in n and "аварийн" in n:
+        return "em_handle"
+    if "длина любого поручня" in n or ("длина" in n and "поручн" in n):
+        return "handrail_len"
+    if "поручн" in n and ("потолк" in n or "стенок" in n) and "свободное пространство" in n:
+        return "handrail_gap"
+    if "горизонтальные поручни" in n:
+        return "handrail_h"
+    if "наклон" in n and "ступен" in n:
+        return "step_slope"
+    if "наклон прохода" in n or (ctx.get("aisle") and "направлени" in n):
+        return "aisle_trans" if "поперечн" in n else "aisle_long"
+    if "высота подушки" in n:
+        return "cushion_h"
+    if "расстояние между сиденьями" in n:
+        return "seat_dist"
+
     # ---------------- автобусы: надписи, аптечка, двери, окна
     if "пиктограмм" in n or ("надпись" in n and "высот" in n):
         return "pict"
     if "цифры высотой" in n:
         return "digits"
     if "аптеч" in n:
-        return "first_aid"
+        unit = p["rows"][0]["unit"].lower()
+        return "first_aid" if unit in ("mm", "мм", "cm", "см") else "first_aid_vol"
     if "орган управления" in n and "открывания дверей" in n:
         return "door_ctrl"
     if "аварийного окна" in n and "над уровнем пола" in n:
@@ -513,8 +616,6 @@ def classify(p, ctx):
             return "em_win_w"
         if "длин" in n or "дилин" in n or "высот" in n:
             return "em_win_l"
-    if "ручк" in n and "двер" in n:
-        return None                     # высота наружной ручки — места в журнале нет
     if ctx.get("door") and not ctx.get("ext"):
         if "высот" in n:
             return ctx["door"] + "_door_h"
@@ -525,6 +626,8 @@ def classify(p, ctx):
     if "сплошное сиденье" in n or "ширина сиденья" in n:
         return "seat_f"
     if "ширина свободного пространства" in n:
+        return "seat_free"
+    if "ширина подушки" in n:
         return "seat_g"
     if "глубина подушки" in n:
         return "cushion_depth"
@@ -1090,6 +1193,8 @@ class Evaluator:
 
     def call(self, name, args):
         n = name.upper().replace("_XLFN.", "")
+        if n in ("TRUE", "FALSE") and not args:
+            return n == "TRUE"
         if n == "COUNT":
             cnt = 0
             for a in args:
