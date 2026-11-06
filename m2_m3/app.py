@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Заполнение журнала сертификационных испытаний ТС категорий M2–M3
-(автобусы, микроавтобусы) по PDF-протоколу испытаний (шаблон: template.xlsx).
+Заполнение журнала сертификационных испытаний ТС категории M3
+(автобусы городские и междугородние) по PDF-протоколу испытаний (шаблон: template_m3.xlsx).
 
 Запуск:  streamlit run app.py
 Зависимости: streamlit, openpyxl, pypdf
@@ -28,7 +28,7 @@ warnings.filterwarnings("ignore")
 
 JOURNAL_SHEET = "НЕОПРЕДЕЛ"
 JCOL = "E"                     # колонка замеров на листе журнала
-TEMPLATE_NAME = "template.xlsx"
+TEMPLATE_NAME = "template_m3.xlsx"
 PROTO_REF = ("48-04", "F1")
 ID_REF = "E1"                  # «ID №…» на листе журнала = название PDF-файла    # «Приложение к протоколу №…» (на него ссылаются все расчётные листы)
 
@@ -197,6 +197,9 @@ def parse_meta(raw):
             r"марк[аиеу]?\s+([^,«»\"”]+?)\s+модел[ьиюе]?\s+([^,«»\"”]+?)\s*(?:,|VIN|идент|$)",
             # «markasi YUTONG, model ZK6890HQG,»
             r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s*:?\s*([^,\s]+(?:\s[^,\s:]+)?)\s*(?:,|VIN)",
+            # «Транспортное средство Chevrolet, Тип транспортного средства 7T12Y, …, Коммерческое наименование Damas DLX ,»
+            r"Транспортное средство\s+([^,]+?)\s*,.*?Коммерческое наименование\s+([^,(]+?)\s*[,(]",
+            r"Транспортное средство\s+([^,]+?)\s*,\s*Тип транспортного средства\s+([^,]+?)\s*,",
             # «ZEEKR tovar belgisi ostidagi 9X Ultra rusumli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+tovar\s+belgisi\s+ostidagi\s+(.+?)\s+rusumli",
             # «X markali Y rusumli»
@@ -401,7 +404,7 @@ def param_value(p):
 
 
 # --------------------------------------------------------------------------
-# Сопоставление параметров протокола с блоками журнала M2–M3
+# Сопоставление параметров протокола с блоками журнала M3
 # --------------------------------------------------------------------------
 def detect_lamp(n):
     # «до задней/от передней оконечности ТС» — это про длину, а не про передний/задний огонь
@@ -1553,7 +1556,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
              "corr" — «СР.ЗАНЧ» (с поправкой Og'ish) = протоколу."""
     tcells = load_cells(template_bytes)
     if JOURNAL_SHEET not in tcells:
-        raise ValueError("В шаблоне нет листа «%s» — это не шаблон M2–M3." % JOURNAL_SHEET)
+        raise ValueError("В шаблоне нет листа «%s» — это не шаблон M3." % JOURNAL_SHEET)
     tbook = Book(tcells)
     blocks = all_blocks()
     seeds, bias = {}, {}
@@ -1811,7 +1814,7 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 def out_name(meta):
     if meta.get("id"):
         return "%s.xlsx" % safe_name(meta["id"])
-    return "Журнал_M2M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
+    return "Журнал_M3_%s_%s_%s.xlsx" % (safe_name(meta["brand"]), safe_name(meta["model"]), meta["vin"])
 
 
 def problems(meta, log):
@@ -1827,8 +1830,12 @@ def problems(meta, log):
         res.append("есть N в протоколе")
     if log.get("suspect"):
         res.append("нераспознанные огни")
+    if not log["filled"]:
+        res.append("нет пунктов для журнала")
     if not meta["brand"] or not meta["model"]:
         res.append("нет марки/модели")
+    if not meta["vin"]:
+        res.append("в протоколе нет VIN")
     if log["notes"]:
         res.append("расхождения в протоколе: %d" % len(log["notes"]))
     if log.get("ub_changed"):
@@ -1862,20 +1869,20 @@ def make_zip(results):
 
 
 def main():
-    st.set_page_config(page_title="Журнал M2–M3", page_icon="🚌", layout="centered")
+    st.set_page_config(page_title="Журнал M3", page_icon="🚌", layout="centered")
     st.markdown(
         "<style>.stButton>button,.stDownloadButton>button{min-height:3rem;font-size:1.05rem}"
         ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
         unsafe_allow_html=True,
     )
-    st.title("🚌 Журнал испытаний M2–M3")
-    st.caption("Автобусы и микроавтобусы. Загрузите один или сразу несколько PDF-протоколов — "
+    st.title("🚌 Журнал испытаний M3")
+    st.caption("Автобусы категории M3 (городские, междугородние). Загрузите один или сразу несколько PDF-протоколов — "
                "получите заполненные журналы по шаблону.")
 
     tpl_path = Path(__file__).resolve().parent / TEMPLATE_NAME
     template_bytes = tpl_path.read_bytes() if tpl_path.exists() else None
     if template_bytes is None:
-        up_t = st.file_uploader("Шаблон журнала M2–M3 (template.xlsx)", type=["xlsx"], key="tpl")
+        up_t = st.file_uploader("Шаблон журнала M3 (template_m3.xlsx)", type=["xlsx"], key="tpl")
         if up_t is not None:
             template_bytes = up_t.getvalue()
     else:
@@ -1911,7 +1918,7 @@ def main():
         st.session_state["batch"] = results
 
     if template_bytes is None:
-        st.info("Положите template.xlsx рядом с app.py или загрузите шаблон выше.")
+        st.info("Положите template_m3.xlsx рядом с app.py или загрузите шаблон выше.")
     elif not pdfs:
         st.info("Загрузите PDF-протокол(ы).")
 
@@ -1934,7 +1941,7 @@ def main():
     st.success("Готово: %d из %d" % (len(ok), len(results)))
     if ok:
         st.download_button("⬇️ Скачать все журналы (.zip, %d)" % len(ok), data=make_zip(results),
-                           file_name="Журналы_M2M3.zip", mime="application/zip", use_container_width=True)
+                           file_name="Журналы_M3.zip", mime="application/zip", use_container_width=True)
     st.subheader("Сводка")
     for n, r in enumerate(results):
         if r["err"]:
@@ -1945,7 +1952,7 @@ def main():
         line = "**%s** — %s %s · заполнено %d · U совпала %d/%d" % (
             meta.get("id") or r["name"], meta["brand"] or "?", meta["model"] or "?", len(log["filled"]),
             sum(1 for x in log.get("u_fit", []) if x[4]), len(log.get("u_fit", [])))
-        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки")) for x in pr)
+        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки", "нет пунктов")) for x in pr)
         (st.warning if hard else st.success)(("⚠️ " if hard else "✅ ") + line +
                                              ("\n\n" + "; ".join(pr) if pr else ""))
         st.download_button("⬇️ %s" % out_name(meta), data=r["data"], file_name=out_name(meta),
@@ -1969,8 +1976,13 @@ def show_details(meta, log):
             meta["temp"], meta["hum"], meta["press"], meta["wind"]))
     if len(meta.get("vins", [])) > 1:
         st.warning("В протоколе несколько VIN, в журнал записан первый. Все: " + ", ".join(meta["vins"]))
+    if not log["filled"]:
+        st.error("В протоколе нет ни одного пункта, для которого есть место в журнале M3 — заполнять нечего. "
+                 "Пункты протокола: " + "; ".join(x[:80] for x in log["unmatched"]))
     if not meta["brand"] or not meta["model"]:
         st.warning("Марка/модель не распознаны — впишите вручную (НЕОПРЕДЕЛ!D10, D11).")
+    if not meta["vin"]:
+        st.info("В протоколе нет VIN — ячейка D14 оставлена пустой.")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Заполнено", len(log["filled"]))
