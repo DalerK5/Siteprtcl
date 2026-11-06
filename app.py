@@ -156,6 +156,9 @@ def parse_meta(raw):
             r"марк[аиеу]?\s+([^,«»\"”]+?)\s+модел[ьиюе]?\s+([^,«»\"”]+?)\s*(?:,|VIN|идент|$)",
             # «markasi YUTONG, model: ZK6890HQG,»
             r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s*:?\s*([^,\s]+(?:\s[^,\s:]+)?)\s*(?:,|VIN)",
+            # «Транспортное средство Chevrolet, Тип транспортного средства 7T12Y, …, Коммерческое наименование Damas DLX ,»
+            r"Транспортное средство\s+([^,]+?)\s*,.*?Коммерческое наименование\s+([^,(]+?)\s*[,(]",
+            r"Транспортное средство\s+([^,]+?)\s*,\s*Тип транспортного средства\s+([^,]+?)\s*,",
             # «ZEEKR tovar belgisi ostidagi 9X Ultra rusumli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+tovar\s+belgisi\s+ostidagi\s+(.+?)\s+rusumli",
             # «X markali Y rusumli»
@@ -476,7 +479,9 @@ def classify(section, n, raw_l, cur_lamp):
     if "температура поверхности без покрытия" in n:
         return "heat", None
     # --- шум
-    if "уровень внешнего шума" in n or "уровень шума" in n:
+    internal = ("внутрен" in section or "внутрен" in n or "посту управления" in n or "кабин" in n
+                or "рабочем месте" in n)
+    if ("уровень внешнего шума" in n or "уровень шума" in n) and not internal:
         if "разгон" in n:
             return "noise", None
         if "постоянн" in n:
@@ -1650,8 +1655,12 @@ def problems(meta, log):
         res.append("есть N в протоколе")
     if log.get("suspect"):
         res.append("нераспознанные пункты")
+    if not log["filled"]:
+        res.append("нет пунктов для журнала")
     if not meta["brand"] or not meta["model"]:
         res.append("нет марки/модели")
+    if not meta["vin"]:
+        res.append("в протоколе нет VIN")
     if log["notes"]:
         res.append("расхождения в протоколе: %d" % len(log["notes"]))
     if log.get("ub_changed"):
@@ -1751,7 +1760,7 @@ def main():
         line = "**%s** — %s %s · заполнено %d · U совпала %d/%d" % (
             meta.get("id") or r["name"], meta["brand"] or "?", meta["model"] or "?", len(log["filled"]),
             sum(1 for x in log.get("u_fit", []) if x[4]), len(log.get("u_fit", [])))
-        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки")) for x in pr)
+        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки", "нет пунктов")) for x in pr)
         (st.warning if hard else st.success)(("⚠️ " if hard else "✅ ") + line +
                                              ("\n\n" + "; ".join(pr) if pr else ""))
         st.download_button("⬇️ %s" % out_name(meta), data=r["data"], file_name=out_name(meta),
@@ -1773,8 +1782,13 @@ def show_details(meta, log):
             meta.get("id") or "—", meta["protocol"] or "—", meta["brand"] or "—", meta["model"] or "—",
             meta["vin"] or "—", d.strftime("%d.%m.%Y") if d else "—",
             meta["temp"], meta["hum"], meta["press"], meta["wind"]))
+    if not log["filled"]:
+        st.error("В протоколе нет ни одного пункта, для которого есть место в журнале M1 — заполнять нечего. "
+                 "Пункты протокола: " + "; ".join(x[:80] for x in log["unmatched"]))
     if not meta["brand"] or not meta["model"]:
         st.warning("Марка/модель не распознаны — впишите вручную (E11, E12).")
+    if not meta["vin"]:
+        st.info("В протоколе нет VIN (например, испытывался тип ТС) — ячейка E15 оставлена пустой.")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Заполнено", len(log["filled"]))
