@@ -197,6 +197,10 @@ def parse_meta(raw):
             r"марк[аиеу]?\s+([^,«»\"”]+?)\s+модел[ьиюе]?\s+([^,«»\"”]+?)\s*(?:,|VIN|идент|$)",
             # «markasi YUTONG, model ZK6890HQG,»
             r"markasi\s+([^,]+?)\s*,?\s+model[i]?\s*:?\s*([^,\s]+(?:\s[^,\s:]+)?)\s*(?:,|VIN)",
+            # «ZEEKR tovar belgisi ostidagi 9X Ultra rusumli»
+            r"([A-Za-zА-Яа-я0-9\-]+)\s+tovar\s+belgisi\s+ostidagi\s+(.+?)\s+rusumli",
+            # «X markali Y rusumli»
+            r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+rusumli",
             # «FOTON markali BJ6931 modelli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
             # «марки MAN шасси MAN TGM-13.290 (»
@@ -1568,7 +1572,9 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
     if meta.get("id"):
         head.append((ID_REF, "ID № %s" % meta["id"]))
     for ref, v in head:
-        if v and v.strip():
+        if ref in ("D10", "D11", "D14") and not (v and v.strip()):
+            v = ""                        # не найдено — пусто, а не значение из шаблона
+        if v and v.strip() or ref in ("D10", "D11", "D14"):
             j, ok = set_str(j, ref, v)
             jc[ref] = v
             if not ok:
