@@ -163,7 +163,7 @@ def parse_meta(raw):
             # «FOTON markali BJ6931 modelli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
             # «marka HONGQI E-QM5, VIN:» — марка = первое слово, модель = остальное
-            r"\bmarka\s+([A-Za-zА-Яа-я0-9\-]+)\s+([^,]+?)\s*,\s*VIN",
+            r"\bmarka\s+([A-Za-zА-Яа-я0-9\-]+)\s+([^,]+?)\s*,?\s*VIN\b",
         ]
         for pat in pats:
             m = re.search(pat, flat, re.I)
@@ -276,6 +276,23 @@ def parse_params(raw):
                 unc = nums[1] if len(nums) >= 3 else None
                 rows.append({"meas": toks[0], "final": toks[-2], "unit": toks[-1], "concl": mm.group(3),
                              "unc": unc})
+        if not rows:
+            # запасной разбор: строка результата разорвана переносами (например, «децибел\n(dB)»)
+            toks = body.split()
+            numre = r"-?\d+(?:[.,]+\d+)?,?"
+            for i in range(len(toks) - 1):
+                if re.fullmatch(r"\d+", toks[i]) and re.fullmatch(numre, toks[i + 1]):
+                    j = next((k for k in range(i + 2, min(len(toks), i + 40)) if toks[k] in ("M", "N")), None)
+                    if j is None:
+                        break
+                    seg = toks[i + 1:j]
+                    nums = [(k, t.rstrip(",")) for k, t in enumerate(seg) if re.fullmatch(numre, t)]
+                    if len(nums) >= 2:
+                        kf, fin = nums[-1]
+                        unit = seg[kf + 1] if kf + 1 < len(seg) else ""
+                        rows.append({"meas": nums[0][1], "final": fin, "unit": unit, "concl": toks[j],
+                                     "unc": nums[1][1] if len(nums) >= 3 else None})
+                    break
         if not rows:
             continue
         params.append({"section": fold(section), "name": name, "raw_l": name.lower(),
