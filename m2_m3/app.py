@@ -201,6 +201,16 @@ def parse_meta(raw):
                 meta["brand"] = meta["brand"] or m.group(1).strip()
                 meta["model"] = meta["model"] or m.group(2).strip()
                 break
+    # общий случай без кавычек: «марка GAC AION I60 530 км, модель «…»», «Марки X.Модель Y. VIN»
+    if not meta["brand"]:
+        m = re.search(r"\bмарк[аиеу]?\s*:?\s+([^«»\"”]{1,80}?)\s*[,.;]?\s*модел[ьиюе]", flat, re.I)
+        if m:
+            meta["brand"] = m.group(1).strip(" ,.;")
+    if not meta["model"]:
+        m = re.search(r"\bмодел[ьиюе]?\s*:?\s*[«\"“]?\s*([^,«»\"”]{1,60}?)\s*[»\"”]?\s*[,.;]?\s*(?:VIN|идент|$)",
+                      flat, re.I)
+        if m:
+            meta["model"] = m.group(1).strip(" ,.;")
     m = (re.search(r"\b[MМ]([123])\s*toifa", flat)
          or re.search(r"категори[яи][^)]{0,40}?\b[MМ]([123])\b", flat))
     meta["category"] = "M" + m.group(1) if m else ""
