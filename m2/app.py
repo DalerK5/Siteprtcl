@@ -220,6 +220,8 @@ def parse_meta(raw):
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+rusumli",
             # «FOTON markali BJ6931 modelli»
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
+            # «Самосвал 4м3 на шасси FOTON AUMARK. Модель BJ1088VEJEA-F. Категория N2.»
+            r"на\s+шасси\s+([^.,(]+?)\s*[.,]\s*Модел[ьи]\s+([A-Za-zА-Яа-я0-9\-]+)",
             # «марки MAN шасси MAN TGM-13.290 (»
             r"марк[аиеу]?\s+([A-Za-zА-Яа-я0-9\-]+)\s+шасси\s+(?:\1\s+)?([^\s(,]+)",
         ]
@@ -239,9 +241,9 @@ def parse_meta(raw):
                       flat, re.I)
         if m:
             meta["model"] = m.group(1).strip(" ,.;")
-    m = (re.search(r"\b[MМ]([123])\s*toifa", flat)
-         or re.search(r"категори[яи][^)]{0,40}?\b[MМ]([123])\b", flat))
-    meta["category"] = "M" + m.group(1) if m else ""
+    m = (re.search(r"\b([MМNН])([123])\s*(?:toifa|kategoriya)", flat)
+         or re.search(r"категори[яи][^)]{0,40}?\b([MМNН])([123])\b", flat, re.I))
+    meta["category"] = ("M" if m.group(1) in "MМ" else "N") + m.group(2) if m else ""
     meta["brand"] = clean_brand(meta["brand"]) if meta["brand"] else ""
     vins = []
     for mm in re.finditer(r"(?:VIN|идент\.?|идентификационный)[^A-Z0-9]{0,25}((?:[A-HJ-NPR-Z0-9]{17}[\s,;]*)+)", flat):
@@ -713,6 +715,14 @@ def classify(p, ctx):
     if "огражден" in n:
         return "guard"
 
+    # ---------------- огнетушитель без пункта «длина»: «высота» / «ширина», норма 200 (mm)
+    if short and re.fullmatch(r"200\s*\(mm\)", p.get("req_raw") or "") and \
+            p["rows"][0]["unit"].lower() in ("mm", "мм"):
+        if "высот" in n:
+            return "ext_h"
+        if "ширин" in n:
+            return "ext_w"
+
     # ---------------- ступеньки
     step = ctx.get("step")
     if step and ("ступен" in n or short) and "наклон" not in n:
@@ -849,7 +859,8 @@ def map_params(params):
         unit = p["rows"][0]["unit"].lower()
         unc, unc_dp = param_unc(p)
         if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
-            if unc is not None:
+            # «8940 m, U 0,003 m» — опечатка в единице значения: значение в mm, а U уже в m
+            if unc is not None and unit in ("mm", "мм"):
                 unc, unc_dp = unc / 1000, unc_dp + 3
             v, dp = v / 1000, dp + 3                   # mm -> m (в журнале габариты в m)
             notes = notes + ["переведено из mm в m: %s" % fmt(v)]

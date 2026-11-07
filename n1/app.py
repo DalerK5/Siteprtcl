@@ -224,6 +224,8 @@ def parse_meta(raw):
             r"автомобиль\s+([^,]+?)\s*,\s*модел[ьиюе]?\s+([^,\s]+)",
             # «N1 kategoriyali avtotransport vositasi marka SHINERAY S60, (EURO-6) VIN»
             r"\bmarka\s+([A-Za-z0-9\-]+)\s+([^,]+?)\s*,",
+            # «Самосвал 4м3 на шасси FOTON AUMARK. Модель BJ1088VEJEA-F. Категория N2.»
+            r"на\s+шасси\s+([^.,(]+?)\s*[.,]\s*Модел[ьи]\s+([A-Za-zА-Яа-я0-9\-]+)",
             # «марки MAN шасси MAN TGM-13.290 (»
             r"марк[аиеу]?\s+([A-Za-zА-Яа-я0-9\-]+)\s+шасси\s+(?:\1\s+)?([^\s(,]+)",
         ]
@@ -775,6 +777,14 @@ def classify(p, ctx):
     if "огражден" in n:
         return "guard"
 
+    # ---------------- огнетушитель без пункта «длина»: «высота» / «ширина», норма 200 (mm)
+    if short and re.fullmatch(r"200\s*\(mm\)", p.get("req_raw") or "") and \
+            p["rows"][0]["unit"].lower() in ("mm", "мм"):
+        if "высот" in n:
+            return "ext_h"
+        if "ширин" in n:
+            return "ext_w"
+
     # ---------------- ступеньки
     step = ctx.get("step")
     if step and ("ступен" in n or short) and "наклон" not in n:
@@ -926,7 +936,8 @@ def map_params(params):
         unit = p["rows"][0]["unit"].lower()
         unc, unc_dp = param_unc(p)
         if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
-            if unc is not None:
+            # «8940 m, U 0,003 m» — опечатка в единице значения: значение в mm, а U уже в m
+            if unc is not None and unit in ("mm", "мм"):
                 unc, unc_dp = unc / 1000, unc_dp + 3
             v, dp = v / 1000, dp + 3                   # mm -> m (в журнале габариты в m)
             notes = notes + ["переведено из mm в m: %s" % fmt(v)]
