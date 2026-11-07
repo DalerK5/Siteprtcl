@@ -28,3 +28,7 @@
 ## Категория M2 (автобусы малой вместимости)
 
 Отдельное приложение в папке `m2/` (`app.py`, шаблон `template_m2.xlsx`, `requirements.txt`). На Streamlit Cloud — новое приложение, Main file path: `m2/app.py`. Подробности в `m2/README.md`.
+
+## Категория N1 (грузовые)
+
+Отдельное приложение в папке `n1/` (`app.py`, шаблон `template_n1.xlsx`, `requirements.txt`). На Streamlit Cloud — новое приложение, ветка `main`, Main file path: `n1/app.py`. Подробности в `n1/README.md`.
