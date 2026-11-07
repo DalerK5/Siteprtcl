@@ -363,7 +363,8 @@ def parse_params(raw):
         if not rows:
             continue
         params.append({"section": fold(section), "name": name, "raw_l": name.lower(),
-                       "name_f": fold(name), "rows": rows, "req": req})
+                       "name_f": fold(name), "rows": rows, "req": req,
+                       "req_raw": norm(mr.group(1)) if mr else ""})
     return params
 
 
@@ -852,7 +853,8 @@ def map_params(params):
                              % LAMPS[p["_guess"]][0]]
         ok = all(r["concl"] == "M" for r in p["rows"])
         values[key] = {"value": v, "dp": dp, "ok": ok, "name": p["name"], "notes": notes,
-                       "unc": unc, "unc_dp": unc_dp}
+                       "unc": unc, "unc_dp": unc_dp, "req": p["req"],
+                       "req_raw": p.get("req_raw", "")}
         trace.append((p, key))
     return values, unmatched, dup, trace
 
@@ -1608,6 +1610,25 @@ def block_ub(cells, book, row):
         return None
 
 
+# Пункты, где норма зависит от класса автобуса (O'z DSt 35.36: классы I / II / III, 35.52: A / B):
+# норма берётся из протокола (в шаблоне — норма по умолчанию)
+PROTO_NORM_KEYS = ("step1_maxh", "step_maxh", "cushion_depth", "srv_door_h", "seat_f", "seat_dist", "aisle_long")
+
+
+def block_norm_cell(cells, row):
+    """Ячейка нормы блока по формуле ППР (E[r+4] -> лист!ППР = [1-]NORM.DIST(норма,…)):
+    (лист, ячейка, "ge"|"le") или None."""
+    m = re.fullmatch(r"='?((?:[^']|'')+?)'?!\$?([A-Z]+)\$?(\d+)", cells[JOURNAL_SHEET].get("E%d" % (row + 4)) or "")
+    if not m:
+        return None
+    sh = m.group(1).replace("''", "'")
+    f = cells.get(sh, {}).get(m.group(2) + m.group(3)) or ""
+    mm = re.fullmatch(r"=(1-)?(?:_xlfn\.)?NORM\.DIST\(\$?([A-Z]+)\$?(\d+),[^()]*\(?\)?\)", f)
+    if not mm:
+        return None
+    return sh, mm.group(2) + mm.group(3), ("ge" if mm.group(1) else "le")
+
+
 # Запасные значения UB (вида «=a/2»), если с UB шаблона неопределённость протокола недостижима
 UB_STEPS = ("0.3", "0.2", "0.1", "0.05", "0.03", "0.02", "0.01", "0.005", "0.003", "0.002", "0.001",
             "0.0005", "0.0002", "0.0001")
@@ -1726,7 +1747,8 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
     ubs = {key: block_ub(tcells, tbook, row) for key, (label, row) in blocks.items()}
 
     log = {"filled": [], "cleared": [], "inexact": [], "missing_cells": [], "verify_bad": [],
-           "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": [], "ub_changed": []}
+           "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": [], "ub_changed": [],
+           "norm_changed": []}
     ub_cells = {}   # лист -> {ячейка: новая формула UB}
     zin = zipfile.ZipFile(io.BytesIO(template_bytes))
     paths = sheet_paths(zin)
@@ -1878,9 +1900,35 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
                 out[ms_path] = x.encode("utf8")
                 mass_cells["D6"] = choice
                 log["notes_mass"] = "лист «Масса»: тип ТС «%s»" % choice
+    # --- нормы из протокола (PROTO_NORM_KEYS)
+    norm_cells = {}
+    for key in PROTO_NORM_KEYS:
+        if key not in values or key not in blocks:
+            continue
+        nc = block_norm_cell(tcells, blocks[key][1])
+        lo, hi = values[key].get("req") or (None, None)
+        if nc is None:
+            continue
+        want = lo if nc[2] == "ge" else hi
+        if lo is None and hi is None:
+            # «36 (cm)» — одно число без «не более/не менее»: направление — как в формуле шаблона
+            nums = re.findall(r"\d+(?:[.,]\d+)?", re.sub(r"\([^)]*\)", "", values[key].get("req_raw") or ""))
+            if len(nums) == 1:
+                want = to_dec(nums[0])
+        old = tcells.get(nc[0], {}).get(nc[1])
+        if want is None or not isinstance(old, (int, float)) or D(repr(old)) == want:
+            continue
+        norm_cells.setdefault(nc[0], {})[nc[1]] = float(want)
+        log["norm_changed"].append("%s: норма %s → %s (по протоколу, '%s'!%s)" % (
+            blocks[key][0], fmt(D(repr(old))), fmt(want), nc[0].strip(), nc[1]))
     for n, p in paths:
         if p not in out:
             out[p] = zin.read(p)
+        if n in norm_cells:
+            x = out[p].decode("utf8")
+            for ref, v in norm_cells[n].items():
+                x, _ = set_num(x, ref, "%g" % v)
+            out[p] = x.encode("utf8")
         if n in ub_cells:
             x = out[p].decode("utf8")
             for ref, f in ub_cells[n].items():
@@ -1903,6 +1951,8 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
         if pr_cells:
             allc[pr_sheet] = dict(allc[pr_sheet], **pr_cells)
         for sh_, cc in ub_cells.items():
+            allc[sh_] = dict(allc[sh_], **cc)
+        for sh_, cc in norm_cells.items():
             allc[sh_] = dict(allc[sh_], **cc)
         if mass_cells:
             allc["Масса"] = dict(allc["Масса"], **mass_cells)
@@ -2036,6 +2086,8 @@ def problems(meta, log):
         res.append("расхождения в протоколе: %d" % len(log["notes"]))
     if log.get("ub_changed"):
         res.append("UB изменена: %d" % len(log["ub_changed"]))
+    if log.get("norm_changed"):
+        res.append("норма по протоколу: %d" % len(log["norm_changed"]))
     return res
 
 
@@ -2202,6 +2254,9 @@ def show_details(meta, log):
     elif log.get("u_fit") and log["calc"]:
         st.success("Проверка: неопределённость (колонка F) совпадает с протоколом у %d блоков."
                    % len(log["u_fit"]))
+    if log.get("norm_changed"):
+        st.info("Норма зависит от класса автобуса — в журнал поставлена норма из протокола:\n" +
+                "\n".join("- %s" % x for x in log["norm_changed"]))
     if log.get("ub_changed"):
         st.warning("Чтобы неопределённость совпала с протоколом, в этих блоках уменьшена погрешность "
                    "прибора UB (в шаблоне она больше, чем допускает протокол). Сверьте с паспортом прибора:\n" +
