@@ -1610,8 +1610,9 @@ def block_ub(cells, book, row):
         return None
 
 
-# Пункты, где норма зависит от класса автобуса (городской / междугородный): норма берётся из протокола
-PROTO_NORM_KEYS = ("step1_maxh", "step_maxh", "cushion_depth")
+# Пункты, где норма зависит от класса автобуса (O'z DSt 35.36: классы I / II / III, 35.52: A / B):
+# норма берётся из протокола (в шаблоне — норма по умолчанию)
+PROTO_NORM_KEYS = ("step1_maxh", "step_maxh", "cushion_depth", "srv_door_h", "seat_f", "seat_dist", "aisle_long")
 
 
 def block_norm_cell(cells, row):
