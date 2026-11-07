@@ -193,6 +193,9 @@ def clean_brand(b):
 
 def parse_meta(raw):
     flat = norm(raw)
+    # «Mодели» (латинская M) -> «Модели»: латинский двойник перед русскими строчными
+    flat = re.sub(r"(?<![A-Za-z])([MKAEOPCTHBX])(?=[а-яё]{2})",
+                  lambda m: "МКАЕОРСТНВХ"["MKAEOPCTHBX".index(m.group(1))], flat)
     meta = {}
     m = re.search(r"№\s*(SB-[\w\-/]+)", flat)
     meta["protocol"] = m.group(1) if m else ""
@@ -373,6 +376,9 @@ def parse_params(raw):
                     break
         if not rows:
             continue
+        if re.fullmatch(r"0*", name.strip()) and all(to_dec(r["final"]) == 0 for r in rows
+                                                     if re.fullmatch(r"-?[\d.,]+", r["final"] or "")):
+            continue                              # пустая заготовка протокола: «nomi 0», «0 (T)», «0 T»
         params.append({"section": fold(section), "name": name, "raw_l": name.lower(),
                        "name_f": fold(name), "rows": rows, "req": req,
                        "req_raw": norm(mr.group(1)) if mr else ""})
@@ -1719,7 +1725,7 @@ def proto_norm(v, kind, old):
                           "превышать", "допускается", "до", "можно", "увел", "max", "min", "максимум", "минимум",
                           "mm", "cm", "m", "мм", "см", "м")]
     if len(words) <= 3:                          # короткое требование: «36», «1800 допускается до 2500», «4 цилиндров: 400»
-        cands += [to_dec(x) for x in re.findall(r"\d+(?:[.,]\d+)?", raw)]
+        cands += [to_dec(x) for x in re.findall(r"(?<![\w.,])\d+(?:[.,]\d+)?(?![\w])", raw)]
     if not cands:
         return None, ""
     val = v["value"]
