@@ -1626,9 +1626,48 @@ def block_ub(cells, book, row):
         return None
 
 
-# Пункты, где норма зависит от класса автобуса (O'z DSt 35.36: классы I / II / III, 35.52: A / B):
-# норма берётся из протокола (в шаблоне — норма по умолчанию)
-PROTO_NORM_KEYS = ("step1_maxh", "step_maxh", "cushion_depth", "srv_door_h", "seat_f", "seat_dist", "aisle_long")
+def proto_norm(v, kind, old):
+    """Норма блока по требованию протокола: (норма в единицах шаблона, None) или (None, причина).
+    kind: "ge" — «не менее», "le" — «не более»; old — норма шаблона.
+    Кандидаты: разобранная граница, затем все числа требования («1800 допускается до 2500», «4 цилиндров: 400»);
+    берётся первый, которому значение протокола удовлетворяет (так протокол с выводом «M» не противоречит журналу)."""
+    lo, hi = v.get("req") or (None, None)
+    if (kind == "ge" and lo is None and hi is not None) or (kind == "le" and hi is None and lo is not None):
+        return None, ""                          # протокол задаёт другую границу («не более 100» для блока 65–100)
+    raw = re.sub(r"\([^)]*\)", " ", v.get("req_raw") or "")
+    cands = [x for x in ((lo if kind == "ge" else hi),) if x is not None]
+    words = [w for w in re.findall(r"[^\W\d_]+", raw.lower())
+             if w not in ("не", "менее", "более", "ниже", "выше", "должна", "должен", "должно", "составлять",
+                          "превышать", "допускается", "до", "можно", "увел", "max", "min", "максимум", "минимум",
+                          "mm", "cm", "m", "мм", "см", "м")]
+    if len(words) <= 3:                          # короткое требование: «36», «1800 допускается до 2500», «4 цилиндров: 400»
+        cands += [to_dec(x) for x in re.findall(r"\d+(?:[.,]\d+)?", raw)]
+    if not cands:
+        return None, ""
+    val = v["value"]
+
+    def scaled(c):                               # единицы требования (m) ↔ шаблона (mm) и наоборот
+        if c and old and c != 0:
+            r = abs(old / c)
+            if 300 <= r <= 3000:
+                return c * 1000
+            if 300 <= 1 / r <= 3000 if r else False:
+                return c / 1000
+        return c
+
+    for c in cands:
+        c = scaled(c)
+        if c is None or c == 0 and kind == "ge" and val < 0:
+            continue
+        if (kind == "ge" and val >= c) or (kind == "le" and val <= c):
+            return c, ""
+    explicit = lo is not None or hi is not None
+    fits_old = (kind == "ge" and val >= old) or (kind == "le" and val <= old)
+    if v.get("ok") and (explicit or not fits_old):
+        # без «не более/не менее» и значение в норме шаблона — норма шаблона, не противоречие («100 (cm)» для 65–100)
+        return None, "значение %s вне нормы протокола («%s»), а вывод протокола «M» — норма оставлена из шаблона" % (
+            fmt(val), (v.get("req_raw") or "").strip())
+    return None, ""
 
 
 def block_norm_cell(cells, row):
@@ -1764,7 +1803,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
 
     log = {"filled": [], "cleared": [], "inexact": [], "missing_cells": [], "verify_bad": [],
            "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": [], "ub_changed": [],
-           "norm_changed": []}
+           "norm_changed": [], "proto_contra": []}
     ub_cells = {}   # лист -> {ячейка: новая формула UB}
     zin = zipfile.ZipFile(io.BytesIO(template_bytes))
     paths = sheet_paths(zin)
@@ -1916,27 +1955,28 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
                 out[ms_path] = x.encode("utf8")
                 mass_cells["D6"] = choice
                 log["notes_mass"] = "лист «Масса»: тип ТС «%s»" % choice
-    # --- нормы из протокола (PROTO_NORM_KEYS)
+    # --- нормы из протокола: журнал повторяет протокол (норма блока = требованию протокола)
     norm_cells = {}
-    for key in PROTO_NORM_KEYS:
-        if key not in values or key not in blocks:
+    for key in values:
+        if key not in blocks:
             continue
         nc = block_norm_cell(tcells, blocks[key][1])
-        lo, hi = values[key].get("req") or (None, None)
         if nc is None:
             continue
-        want = lo if nc[2] == "ge" else hi
-        if lo is None and hi is None:
-            # «36 (cm)» — одно число без «не более/не менее»: направление — как в формуле шаблона
-            nums = re.findall(r"\d+(?:[.,]\d+)?", re.sub(r"\([^)]*\)", "", values[key].get("req_raw") or ""))
-            if len(nums) == 1:
-                want = to_dec(nums[0])
         old = tcells.get(nc[0], {}).get(nc[1])
-        if want is None or not isinstance(old, (int, float)) or D(repr(old)) == want:
+        if not isinstance(old, (int, float)) or isinstance(old, bool):
+            continue
+        old = D(repr(old))
+        want, why = proto_norm(values[key], nc[2], old)
+        if want is None:
+            if why:
+                log["proto_contra"].append("%s: %s" % (blocks[key][0], why))
+            continue
+        if want == old:
             continue
         norm_cells.setdefault(nc[0], {})[nc[1]] = float(want)
         log["norm_changed"].append("%s: норма %s → %s (по протоколу, '%s'!%s)" % (
-            blocks[key][0], fmt(D(repr(old))), fmt(want), nc[0].strip(), nc[1]))
+            blocks[key][0], fmt(old), fmt(want), nc[0].strip(), nc[1]))
     for n, p in paths:
         if p not in out:
             out[p] = zin.read(p)
@@ -2104,6 +2144,8 @@ def problems(meta, log):
         res.append("UB изменена: %d" % len(log["ub_changed"]))
     if log.get("norm_changed"):
         res.append("норма по протоколу: %d" % len(log["norm_changed"]))
+    if log.get("proto_contra"):
+        res.append("противоречия в протоколе: %d" % len(log["proto_contra"]))
     return res
 
 
@@ -2271,8 +2313,12 @@ def show_details(meta, log):
         st.success("Проверка: неопределённость (колонка F) совпадает с протоколом у %d блоков."
                    % len(log["u_fit"]))
     if log.get("norm_changed"):
-        st.info("Норма зависит от класса автобуса — в журнал поставлена норма из протокола:\n" +
+        st.info("Норма в журнале поставлена как в протоколе:\n" +
                 "\n".join("- %s" % x for x in log["norm_changed"]))
+    if log.get("proto_contra"):
+        st.warning("Противоречие в самом протоколе — значение не укладывается в норму протокола, а вывод «M» "
+                   "(значение в журнал записано как в протоколе):\n" +
+                   "\n".join("- %s" % x for x in log["proto_contra"]))
     if log.get("ub_changed"):
         st.warning("Чтобы неопределённость совпала с протоколом, в этих блоках уменьшена погрешность "
                    "прибора UB (в шаблоне она больше, чем допускает протокол). Сверьте с паспортом прибора:\n" +
