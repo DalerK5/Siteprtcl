@@ -200,6 +200,11 @@ def parse_meta(raw):
     meta["brand"] = m.group(1).strip() if m else ""
     m = re.search(r"модел[ьиюе]\s*[«\"“]([^»\"”]+)[»\"”]", flat)
     meta["model"] = m.group(1).strip() if m else ""
+    # «Мобильная химико-бактериологическая лаборатория (марка транспортного средства KRANTAS (категория …»
+    m = re.search(r"Sinov obyekti:\s*(.{3,120}?)\s*\(\s*марк[аи] транспортного средства\s+([A-Za-zА-Яа-я0-9\-]+)", flat)
+    if m and not meta["brand"]:
+        meta["brand"] = m.group(2).strip()
+        meta["model"] = meta["model"] or m.group(1).strip(" ,.;")
     if not meta["brand"] or not meta["model"]:
         pats = [
             # «марки DONGFENG модели EII008,»
