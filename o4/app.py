@@ -2275,6 +2275,29 @@ def make_zip(results):
     return buf.getvalue()
 
 
+# Картинка полуприцепа для заголовка (SVG прямо в коде — отдельных файлов не нужно)
+TRAILER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 70" width="150" height="66" style="flex:none;overflow:visible" '
+    'role="img" aria-label="Полуприцеп">'
+    # кузов-фургон
+    '<rect x="6" y="6" width="148" height="38" rx="3" fill="#2E7D32"/>'
+    '<rect x="6" y="6" width="148" height="38" rx="3" fill="none" stroke="#1B5E20" stroke-width="2"/>'
+    '<g stroke="#1B5E20" stroke-width="1.5" opacity=".7">'
+    '<line x1="40" y1="9" x2="40" y2="41"/><line x1="74" y1="9" x2="74" y2="41"/>'
+    '<line x1="108" y1="9" x2="108" y2="41"/><line x1="140" y1="9" x2="140" y2="41"/></g>'
+    # рама, шкворень спереди, опорные стойки
+    '<rect x="6" y="44" width="148" height="5" fill="#455A64"/>'
+    '<rect x="14" y="49" width="6" height="4" fill="#455A64"/>'
+    '<rect x="44" y="49" width="4" height="13" fill="#607D8B"/><rect x="40" y="61" width="12" height="3" fill="#607D8B"/>'
+    # задняя противоподкатная защита
+    '<rect x="150" y="49" width="4" height="9" fill="#455A64"/><rect x="146" y="56" width="10" height="4" fill="#455A64"/>'
+    # три оси
+    '<g fill="#263238"><circle cx="98" cy="56" r="9"/><circle cx="118" cy="56" r="9"/><circle cx="138" cy="56" r="9"/></g>'
+    '<g fill="#B0BEC5"><circle cx="98" cy="56" r="3.5"/><circle cx="118" cy="56" r="3.5"/><circle cx="138" cy="56" r="3.5"/></g>'
+    '</svg>'
+)
+
+
 def main():
     st.set_page_config(page_title="Журнал %s" % CAT, page_icon="🚛", layout="centered")
     st.markdown(
@@ -2282,7 +2305,11 @@ def main():
         ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
         unsafe_allow_html=True,
     )
-    st.title("🚛 Журнал испытаний %s" % CAT)
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding-top:1.6rem;margin:0 0 .6rem;overflow:visible">'
+        + TRAILER_SVG +
+        '<h1 style="margin:0;padding:0;line-height:1.15">Журнал испытаний %s</h1></div>' % CAT,
+        unsafe_allow_html=True)
     st.caption("Прицепы и полуприцепы категории %s%s. Загрузите один или сразу несколько PDF-протоколов — " % (CAT, CAT_NOTE) +
                "получите заполненные журналы по шаблону.")
 
