@@ -324,7 +324,7 @@ def parse_params(raw):
     events = []
     for m in re.finditer(r"(\d+)\.\s*Sinalayotgan ko.rsatgich\s+(.*?)\s*Texnik talablarni", text, re.S):
         events.append((m.start(), m.end(), "sec", norm(m.group(2))))
-    for m in re.finditer(r"(\d+)\.\s*Aniqlanayotgan parametr nomi", text):
+    for m in re.finditer(r"(\d+)\.\s*Aniqlanayotgan\s+parametr\s+nomi", text):
         events.append((m.start(), m.end(), "par", None))
     events.sort(key=lambda e: e[0])
 
@@ -942,6 +942,10 @@ def map_params(params):
             continue
         unit = p["rows"][0]["unit"].lower()
         unc, unc_dp = param_unc(p)
+        if key in DIM_KEYS and v == 0:
+            unmatched.append(p)                       # «Длина ТС не более … 0 m» — пустая заготовка протокола
+            trace.append((p, None))
+            continue
         if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
             # «8940 m, U 0,003 m» — опечатка в единице значения: значение в mm, а U уже в m
             if unc is not None and unit in ("mm", "мм"):

@@ -251,7 +251,7 @@ def parse_params(raw):
     events = []
     for m in re.finditer(r"(\d+)\.\s*Sinalayotgan ko.rsatgich\s+(.*?)\s*Texnik talablarni", text, re.S):
         events.append((m.start(), m.end(), "sec", norm(m.group(2))))
-    for m in re.finditer(r"(\d+)\.\s*Aniqlanayotgan parametr nomi", text):
+    for m in re.finditer(r"(\d+)\.\s*Aniqlanayotgan\s+parametr\s+nomi", text):
         events.append((m.start(), m.end(), "par", None))
     events.sort(key=lambda e: e[0])
 
