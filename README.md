@@ -36,3 +36,7 @@
 ## Категория O4 (прицепы)
 
 Отдельное приложение в папке `o4/` (`app.py`, шаблон `template_o4.xlsx`, `requirements.txt`). На Streamlit Cloud — новое приложение, ветка `main`, Main file path: `o4/app.py`. Подробности в `o4/README.md`.
+
+## Категория N3 (грузовые > 12 т)
+
+Отдельное приложение в папке `n3/` (`app.py`, шаблон `template_n3.xlsx`, `requirements.txt`). На Streamlit Cloud — новое приложение, ветка `main`, Main file path: `n3/app.py`. Подробности в `n3/README.md`.
