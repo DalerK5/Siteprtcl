@@ -1895,7 +1895,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
 
     log = {"filled": [], "cleared": [], "inexact": [], "missing_cells": [], "verify_bad": [],
            "calc": True, "unlinked": [], "u_fit": [], "u_bad": [], "u_skip": [], "ub_changed": [],
-           "norm_changed": [], "proto_contra": []}
+           "norm_changed": [], "proto_contra": [], "contra_by": [], "ppr_low": []}
     ub_cells = {}   # лист -> {ячейка: новая формула UB}
     zin = zipfile.ZipFile(io.BytesIO(template_bytes))
     paths = sheet_paths(zin)
@@ -2072,6 +2072,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
         if want is None:
             if why:
                 log["proto_contra"].append("%s: %s" % (blocks[key][0], why))
+                log["contra_by"].append((values[key]["name"], why))
             continue
         if want == old:
             continue
@@ -2139,6 +2140,17 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
             if got is None or not _round_eq(got, unc, unc_dp):
                 log["u_bad"].append("%s: протокол %s, в журнале %s" % (
                     label, fmt(unc), "ошибка" if got is None else round(got, unc_dp + 2)))
+        # правило принятия решения < 95 %: значение протокола вне нормы журнала (ошибка протокола)
+        for label, val, trip, exact, ok, key, dp in log["filled"]:
+            row = blocks[key][1]
+            r = book.result(JOURNAL_SHEET, "%s%d" % (JCOL, row + 4))
+            if r[0] != "v" or not isinstance(r[1], (int, float)) or isinstance(r[1], bool) or r[1] >= 0.95:
+                continue
+            nc = block_norm_cell(allc, row)
+            nv = allc.get(nc[0], {}).get(nc[1]) if nc else None
+            norm_s = ("%s %s" % ("≥" if nc[2] == "ge" else "≤", fmt(D(repr(nv))))
+                      if isinstance(nv, (int, float)) and not isinstance(nv, bool) else "")
+            log["ppr_low"].append((values[key]["name"], label, val, norm_s, r[1]))
     except Exception:  # noqa: BLE001
         log["calc"] = False
         for n, p in paths:
@@ -2188,7 +2200,64 @@ def process(pdf_bytes, template_bytes, mode="corr", file_id=""):
     log["params"] = len(params)
     log["nonconf"] = [p["name"] for p in params if any(r["concl"] != "M" for r in p["rows"])]
     log["notes"] = [(v["name"], n) for v in values.values() for n in v["notes"]]
+    log["proto_errors"], log["proto_border"] = protocol_errors(params, log)
     return data, meta, log
+
+
+def protocol_errors(params, log):
+    """Ошибки самого протокола по пунктам: [(название пункта, [что не так])], в порядке протокола."""
+    errs = {}
+
+    def add(name, why):
+        lst = errs.setdefault(name, [])
+        if why not in lst:
+            lst.append(why)
+
+    for p in params:
+        req_s = (p.get("req_raw") or "").strip()
+        for r in p["rows"]:
+            try:
+                v = row_value(r, p["req"])[0]
+            except (ValueError, InvalidOperation):
+                v = None
+            if v is not None and in_req(v, p["req"]) is False \
+                    and not any(in_req(v * k, p["req"]) for k in (D("0.001"), D("1000"))):   # m ↔ mm — не ошибка
+                add(p["name"], "значение %s не укладывается в требование протокола «%s»%s" % (
+                    fmt(v), req_s[:90], ", а вывод «M»" if r["concl"] == "M" else ""))
+            if r["concl"] != "M":
+                add(p["name"], "вывод протокола «%s» — несоответствие" % r["concl"])
+            try:
+                m, f = to_dec(r["meas"]), to_dec(r["final"])
+            except (ValueError, InvalidOperation):
+                m = f = None
+            if m is not None and f is not None and m != f and m * 1000 != f and f * 1000 != m:
+                add(p["name"], "измерено %s, а в итоге %s — разные числа" % (r["meas"], r["final"]))
+            if v and r.get("unc"):
+                try:
+                    u = to_dec(r["unc"])
+                except (ValueError, InvalidOperation):
+                    u = None
+                if u is not None and u >= abs(v):
+                    add(p["name"], "неопределённость U = %s не меньше самого значения %s — вероятно, опечатка"
+                        % (r["unc"], fmt(v)))
+    for name, why in log.get("contra_by", []):
+        if name not in errs:
+            add(name, why)
+    border = {}
+    for name, label, val, norm_s, ppr in log.get("ppr_low", []):
+        pct = ("%.1f" % (ppr * 100)).rstrip("0").rstrip(".")
+        if ppr < 0.05:      # значение вне нормы журнала (стандарта)
+            add(name, "%s журнала%s: значение %s (вероятность соответствия %s %%)" % (
+                "ниже нормы" if norm_s.startswith("≥") else "превышает норму" if norm_s.startswith("≤") else "вне нормы",
+                (" " + norm_s) if norm_s else "", fmt(val), pct))
+        else:               # на границе нормы: значение ≈ норме, правило принятия решения < 95 %
+            border.setdefault(name, "значение %s при норме %s — вероятность соответствия %s %% (нужно ≥ 95 %%)" % (
+                fmt(val), norm_s or "журнала", pct))
+    order = {}
+    for i, p in enumerate(params):
+        order.setdefault(p["name"], i)
+    key = lambda kv: order.get(kv[0], 10 ** 6)  # noqa: E731
+    return sorted(errs.items(), key=key), sorted(border.items(), key=key)
 
 
 def id_from_filename(fname):
@@ -2227,8 +2296,10 @@ def problems(meta, log):
         res.append("U не сошлась: %d" % len(log["u_bad"]))
     if not log["calc"]:
         res.append("формулы не посчитаны")
-    if log["nonconf"]:
-        res.append("есть N в протоколе")
+    if log.get("proto_errors"):
+        res.append("ошибки в протоколе: %d" % len(log["proto_errors"]))
+    if log.get("proto_border"):
+        res.append("на границе нормы: %d" % len(log["proto_border"]))
     if log.get("suspect"):
         res.append("нераспознанные огни")
     if not log["filled"]:
@@ -2245,8 +2316,6 @@ def problems(meta, log):
         res.append("UB изменена: %d" % len(log["ub_changed"]))
     if log.get("norm_changed"):
         res.append("норма по протоколу: %d" % len(log["norm_changed"]))
-    if log.get("proto_contra"):
-        res.append("противоречия в протоколе: %d" % len(log["proto_contra"]))
     return res
 
 
@@ -2386,7 +2455,7 @@ def main():
         line = "**%s** — %s %s · заполнено %d · U совпала %d/%d" % (
             meta.get("id") or r["name"], meta["brand"] or "?", meta["model"] or "?", len(log["filled"]),
             sum(1 for x in log.get("u_fit", []) if x[4]), len(log.get("u_fit", [])))
-        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки", "нет пунктов", "категория"))
+        hard = any(x.startswith(("среднее", "U не", "формулы", "нераспозн", "нет марки", "нет пунктов", "категория", "ошибки в протоколе"))
                    for x in pr)
         (st.warning if hard else st.success)(("⚠️ " if hard else "✅ ") + line +
                                              ("\n\n" + "; ".join(pr) if pr else ""))
@@ -2422,6 +2491,19 @@ def show_details(meta, log):
     if not meta["vin"]:
         st.info("В протоколе нет VIN — ячейка D14 оставлена пустой.")
 
+    pe = log.get("proto_errors") or []
+    if pe:
+        st.subheader("🔴 Ошибки в протоколе (%d)" % len(pe))
+        st.caption("Журнал заполнен как в протоколе. Ниже — пункты, где в самом протоколе что-то не так.")
+        for name, why in pe:
+            st.error("**%s**\n\n%s" % (name[:160], "\n".join("- %s" % w for w in why)))
+    else:
+        st.success("Ошибок в протоколе не найдено: значения в нормах, вывод «M».")
+    pb = log.get("proto_border") or []
+    if pb:
+        st.warning("🟡 **На границе нормы (%d)** — значение равно норме или очень близко, правило принятия "
+                   "решения в журнале < 95 %%:\n" % len(pb) + "\n".join("- **%s**: %s" % (n[:110], w) for n, w in pb))
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Заполнено", len(log["filled"]))
     c2.metric("Очищено", len(log["cleared"]))
@@ -2443,10 +2525,6 @@ def show_details(meta, log):
     if log.get("norm_changed"):
         st.info("Норма в журнале поставлена как в протоколе:\n" +
                 "\n".join("- %s" % x for x in log["norm_changed"]))
-    if log.get("proto_contra"):
-        st.warning("Противоречие в самом протоколе — значение не укладывается в норму протокола, а вывод «M» "
-                   "(значение в журнал записано как в протоколе):\n" +
-                   "\n".join("- %s" % x for x in log["proto_contra"]))
     if log.get("ub_changed"):
         st.warning("Чтобы неопределённость совпала с протоколом, в этих блоках уменьшена погрешность "
                    "прибора UB (в шаблоне она больше, чем допускает протокол). Сверьте с паспортом прибора:\n" +
@@ -2460,8 +2538,6 @@ def show_details(meta, log):
     if log["notes"]:
         st.warning("Проверьте (расхождения в протоколе, пересчёт единиц):\n" +
                    "\n".join("- %s: %s" % (n[:70], t) for n, t in log["notes"]))
-    if log["nonconf"]:
-        st.error("Несоответствия (N) в протоколе: " + "; ".join(log["nonconf"]))
     if log["missing_cells"]:
         st.warning("Не найдены ячейки в шаблоне: " + ", ".join(sorted(set(log["missing_cells"]))))
     if log["dup"]:
