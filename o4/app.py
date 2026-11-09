@@ -225,6 +225,14 @@ def parse_meta(raw):
             r"([A-Za-zА-Яа-я0-9\-]+)\s+markali\s+(.+?)\s+modelli",
             # «Самосвал 4м3 на шасси FOTON AUMARK. Модель BJ1088VEJEA-F. Категория N2.»
             r"на\s+шасси\s+([^.,(]+?)\s*[.,]\s*Модел[ьи]\s+([A-Za-zА-Яа-я0-9\-]+)",
+            # «Полуприцеп … грузовой марки: SCHMITZ Cargobull, VIN»
+            r"марки:\s*([^,]+?)\s*,\s*()VIN",
+            # «ПОЛУПРИЦЕП САМОСВАЛ Huaxiang brand LYY9400ZHX;»
+            r"([A-Za-z][A-Za-z0-9\-]*)\s+brand\s+([A-Za-z0-9\-]+)",
+            # «марка YANGJIA, модел LHL9380GFG,»
+            r"марк[аиеу]?\s+([^,]+?)\s*,\s*модел[ьиюе]?\s+([^,\s]+)",
+            # «JINAN SENYANG markali HZF9400ZC modeldagi»
+            r"([A-Z][A-Za-z0-9\-]*(?:\s+[A-Z][A-Za-z0-9\-]*)*)\s+markali,?\s+(.+?)\s+modeldagi",
             # «марки MAN шасси MAN TGM-13.290 (»
             r"марк[аиеу]?\s+([A-Za-zА-Яа-я0-9\-]+)\s+шасси\s+(?:\1\s+)?([^\s(,]+)",
         ]
@@ -244,8 +252,9 @@ def parse_meta(raw):
                       flat, re.I)
         if m:
             meta["model"] = m.group(1).strip(" ,.;")
-    m = (re.search(r"\b([MМNНOО])([1234])\s*(?:toifa|kategoriya)", flat)
-         or re.search(r"категори[яи][^)]{0,40}?\b([MМNНOО])([1234])\b", flat, re.I))
+    m = (re.search(r"\b([MМNНOО])([1234])»?\s*(?:toifa|kategoriya|категори)", flat, re.I)
+         or re.search(r"к[ао]тегори[яи][^)]{0,40}?\b([MМNНOО])([1234])\b", flat, re.I)
+         or re.search(r"\bкат\.\s*([MМNНOО])([1234])\b", flat, re.I))
     meta["category"] = ({"M": "M", "М": "M", "N": "N", "Н": "N", "O": "O", "О": "O"}[m.group(1)] + m.group(2)) if m else ""
     meta["brand"] = clean_brand(meta["brand"]) if meta["brand"] else ""
     vins = []
@@ -320,7 +329,7 @@ def parse_params(raw):
     events = []
     for m in re.finditer(r"(\d+)\.\s*Sinalayotgan ko.rsatgich\s+(.*?)\s*Texnik talablarni", text, re.S):
         events.append((m.start(), m.end(), "sec", norm(m.group(2))))
-    for m in re.finditer(r"(\d+)\.\s*Aniqlanayotgan parametr nomi", text):
+    for m in re.finditer(r"(\d+)\.\s*Aniqlanayotgan\s+parametr\s+nomi", text):
         events.append((m.start(), m.end(), "par", None))
     events.sort(key=lambda e: e[0])
 
@@ -506,24 +515,34 @@ def classify_o4(section, n):
     if rear and "ппзу" not in n:
         if "поперечного сечения" in n:
             return "rup_h"
+        if "закруглен" in n or "радиус" in n or "концы" in n:
+            return "rup_rad"
         if "просвет" in n or ("нижнего края" in n and "грунт" not in section):
             return "rup_clear"
         if "ширин" in n or "оси" in n:
             return "rup_width"
     if "боковин" in n or "брызговик" in n or "разбрызгиван" in section:
+        if "высота которой" in n or ("внутренней поверхности" in n and "высот" in n):
+            return "spl_inner_h"
+        if "между шинами" in n:
+            return "spl_axle_gap"
+        if "устройство для уменьшения разбрызгивания" in n and "отстоять" in n:
+            return "spl_dev"
+        if "отклонят" in n or "прикладываемого в точке" in n:
+            return "spl_flap_defl"
         if "внутренн" in n and "боковин" in n:
             return "spl_side"
         if "глубин" in n and "боковин" in n:
             return "spl_depth"
         if "брызговик" in n and ("нижнего края" in n or "высот" in n):
             return "spl_flap_h"
-        if "брызговик" in n and ("задним краем шины" in n or "расстояние между" in n):
+        if "брызговик" in n and ("задним краем шины" in n or "заднего края шины" in n or "расстояние между" in n):
             return "spl_flap_dist"
     side = "боков" in section and ("защит" in section or "огражд" in section) or "боковое защитное" in n \
         or "бокового огражден" in n
     if side:
-        if "габаритную ширину" in n or "внутрь" in n:
-            return "sg_inboard"              # не более 120 mm внутрь от габарита — строки в шаблоне O4 нет
+        if "габаритную ширину" in n or "внутрь" in n or "наиболее удаленной плоскости" in n:
+            return "sg_inboard"
         if "передн" in n and ("край" in n or "конец" in n):
             return "sg_front"
         if "задн" in n and ("край" in n or "конец" in n):
@@ -597,6 +616,13 @@ def classify(p, ctx):
     key = classify_o4(section, n)
     if key:
         return key
+    if "габарит" in section:
+        if re.match(r"длина (а?тс|транспортного)", n):
+            return "length"
+        if re.match(r"ширина (а?тс|транспортного)", n):
+            return "width"
+        if re.match(r"высота (а?тс|транспортного)", n):
+            return "height"
 
     # ---------------- отопление, габариты, сигнал, стёкла
     if "температура поверхности без покрытия" in n or "температура любой такой части" in n:
@@ -796,11 +822,14 @@ LABEL_RULES = [
     # --- O4
     ("rup_clear", r"зпз: дорожный просвет"), ("rup_width", r"зпз: укорочение"), ("rup_h", r"зпз: высота поперечного"),
     ("spl_side", r"внутреннего края наружной боковины"), ("spl_depth", r"глубина наружной боковины"),
+    ("spl_dev", r"устройство для уменьшения разбрызгивания"), ("spl_flap_defl", r"отклонение нижнего края брызговика"),
     ("spl_flap_h", r"нижнего края брызговика"), ("spl_flap_dist", r"между брызговиком и задним краем"),
-    ("sg_rear", r"боковое защитное устройство: задний конец"), ("sg_rad", r"боковое защитное устройство: радиус"),
+    ("sg_rear", r"задний край бокового ограждения"), ("sg_rad", r"боковое защитное устройство: радиус"),
     ("sg_gap", r"боковое защитное устройство: расстояние между полосами"),
     ("sg_h", r"боковое защитное устройство: высота полос"), ("sg_front", r"передний край бокового ограждения"),
     ("sg_low", r"нижним краем бокового ограждения"),
+    ("rup_rad", r"зпз: радиус"), ("sg_inboard", r"от наиболее удал"),
+    ("spl_inner_h", r"высота наружной боковины по внутренней"), ("spl_axle_gap", r"между шинами осевой"),
     ("heat", r"температура поверхности без покрытия|температура любой такой части"),
     ("length", r"^максимальная длина"), ("width", r"^максимальная ширина"), ("height", r"^максимальная высота"),
     ("horn", r"звукового сигнального"),
@@ -917,6 +946,10 @@ def map_params(params):
             continue
         unit = p["rows"][0]["unit"].lower()
         unc, unc_dp = param_unc(p)
+        if key in DIM_KEYS and v == 0:
+            unmatched.append(p)                       # «Длина ТС не более … 0 m» — пустая заготовка протокола
+            trace.append((p, None))
+            continue
         if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
             # «8940 m, U 0,003 m» — опечатка в единице значения: значение в mm, а U уже в m
             if unc is not None and unit in ("mm", "мм"):
@@ -1871,19 +1904,28 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
     out = {}
     jc = dict(tcells[JOURNAL_SHEET])
 
-    # --- шапка
-    head = [("D5", "%s ˚С" % num_or_text(meta["temp"]) if meta["temp"] is not None else ""),
-            ("D6", "%s %%" % num_or_text(meta["hum"]) if meta["hum"] is not None else ""),
-            ("D7", "%s kPa" % num_or_text(meta["press"]) if meta["press"] is not None else ""),
-            ("D8", "%s m/s" % num_or_text(meta["wind"]) if meta["wind"] is not None else ""),
-            ("D10", meta["brand"]), ("D11", meta["model"]), ("D12", meta["category"]),
-            ("D14", meta["vin"])]
+    # --- шапка: строки находятся по подписям столбца B (в шаблоне O4 строки «Состояние», «Двигатель», «Пробег» убраны)
+    hr = {"temp": 4, "hum": 5, "press": 6, "wind": 7, "brand": 9, "model": 10, "cat": 11, "vin": 12}
+    for r in range(1, 20):
+        lab = fold(str(tcells[JOURNAL_SHEET].get("B%d" % r) or ""))
+        for key, pat in (("temp", "температура"), ("hum", "влажност"), ("press", "давлени"), ("wind", "ветра"),
+                         ("brand", "марка"), ("model", "модификац"), ("cat", "категори"),
+                         ("vin", "идентификационный|vin")):
+            if re.search(pat, lab):
+                hr[key] = r
+    must = ("D%d" % hr["brand"], "D%d" % hr["model"], "D%d" % hr["vin"])
+    head = [("D%d" % hr["temp"], "%s ˚С" % num_or_text(meta["temp"]) if meta["temp"] is not None else ""),
+            ("D%d" % hr["hum"], "%s %%" % num_or_text(meta["hum"]) if meta["hum"] is not None else ""),
+            ("D%d" % hr["press"], "%s kPa" % num_or_text(meta["press"]) if meta["press"] is not None else ""),
+            ("D%d" % hr["wind"], "%s m/s" % num_or_text(meta["wind"]) if meta["wind"] is not None else ""),
+            ("D%d" % hr["brand"], meta["brand"]), ("D%d" % hr["model"], meta["model"]),
+            ("D%d" % hr["cat"], meta["category"]), ("D%d" % hr["vin"], meta["vin"])]
     if meta.get("id"):
         head.append((ID_REF, "ID № %s" % meta["id"]))
     for ref, v in head:
-        if ref in ("D10", "D11", "D14") and not (v and v.strip()):
+        if ref in must and not (v and v.strip()):
             v = ""                        # не найдено — пусто, а не значение из шаблона
-        if v and v.strip() or ref in ("D10", "D11", "D14"):
+        if v and v.strip() or ref in must:
             j, ok = set_str(j, ref, v)
             jc[ref] = v
             if not ok:
