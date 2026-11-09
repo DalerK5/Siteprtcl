@@ -870,7 +870,7 @@ def map_params(params):
             continue
         if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
             # «8940 m, U 0,003 m» — опечатка в единице значения: значение в mm, а U уже в m
-            if unc is not None and unit in ("mm", "мм"):
+            if unc is not None and unit in ("mm", "мм") and unc >= D("0.05"):   # «15850 mm, U 0,003» — U уже в m
                 unc, unc_dp = unc / 1000, unc_dp + 3
             v, dp = v / 1000, dp + 3                   # mm -> m (в журнале габариты в m)
             notes = notes + ["переведено из mm в m: %s" % fmt(v)]
