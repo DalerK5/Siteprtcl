@@ -419,6 +419,10 @@ def row_value(row, req):
         return f, decimals_of(row["final"]), "измерено «%s» не читается — взято итоговое %s" % (row["meas"], row["final"])
     if m == f:
         return f, decimals_of(row["final"]), None
+    if re.fullmatch(r"-?\d+[.,]+", row["meas"] or "") and str(f).startswith(str(m)):
+        # измеренное напечатано обрывком («5,» при итоге 5,5) — берём итоговое
+        return f, decimals_of(row["final"]), "измерено «%s» (обрывок), в итоге %s — взято итоговое" % (
+            row["meas"], row["final"])
     cm, cf = in_req(m, req), in_req(f, req)
     if cf is True and cm is False:
         return f, decimals_of(row["final"]), "измерено %s, в итоге %s — взято итоговое" % (row["meas"], row["final"])
@@ -2352,7 +2356,7 @@ def protocol_errors(params, log):
             except (ValueError, InvalidOperation):
                 m = f = None
             if m is not None and f is not None and m != f and m * 1000 != f and f * 1000 != m:
-                add(p["name"], "измерено %s, а в итоге %s — разные числа" % (r["meas"], r["final"]))
+                add(p["name"], "измерено «%s», а в итоге «%s» — разные числа" % (r["meas"], r["final"]))
             if v and r.get("unc"):
                 try:
                     u = to_dec(r["unc"])
