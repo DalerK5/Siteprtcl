@@ -2335,16 +2335,18 @@ def make_zip(results):
     return buf.getvalue()
 
 
-def main():
-    st.set_page_config(page_title="Журнал %s" % CAT, page_icon="🚚", layout="centered")
-    st.markdown(
-        "<style>.stButton>button,.stDownloadButton>button{min-height:3rem;font-size:1.05rem}"
-        ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
-        unsafe_allow_html=True,
-    )
-    st.title("🚚 Журнал испытаний %s" % CAT)
-    st.caption("Грузовые автомобили категории %s%s. Загрузите один или сразу несколько PDF-протоколов — " % (CAT, CAT_NOTE) +
-               "получите заполненные журналы по шаблону.")
+def main(embedded=False):
+    """embedded=True — внутри общего приложения (all/app.py): без set_page_config и своего заголовка."""
+    if not embedded:
+        st.set_page_config(page_title="Журнал %s" % CAT, page_icon="🚚", layout="centered")
+        st.markdown(
+            "<style>.stButton>button,.stDownloadButton>button{min-height:3rem;font-size:1.05rem}"
+            ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
+            unsafe_allow_html=True,
+        )
+        st.title("🚚 Журнал испытаний %s" % CAT)
+        st.caption("Грузовые автомобили категории %s%s. Загрузите один или сразу несколько PDF-протоколов — " % (CAT, CAT_NOTE) +
+                   "получите заполненные журналы по шаблону.")
 
     tpl_path = Path(__file__).resolve().parent / TEMPLATE_NAME
     template_bytes = tpl_path.read_bytes() if tpl_path.exists() else None

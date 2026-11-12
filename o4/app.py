@@ -2371,20 +2371,22 @@ TRAILER_SVG = (
 )
 
 
-def main():
-    st.set_page_config(page_title="Журнал %s" % CAT, page_icon="🚛", layout="centered")
-    st.markdown(
-        "<style>.stButton>button,.stDownloadButton>button{min-height:3rem;font-size:1.05rem}"
-        ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding-top:1.6rem;margin:0 0 .6rem;overflow:visible">'
-        + TRAILER_SVG +
-        '<h1 style="margin:0;padding:0;line-height:1.15">Журнал испытаний %s</h1></div>' % CAT,
-        unsafe_allow_html=True)
-    st.caption("Прицепы и полуприцепы категории %s%s. Загрузите один или сразу несколько PDF-протоколов — " % (CAT, CAT_NOTE) +
-               "получите заполненные журналы по шаблону.")
+def main(embedded=False):
+    """embedded=True — внутри общего приложения (all/app.py): без set_page_config и своего заголовка."""
+    if not embedded:
+        st.set_page_config(page_title="Журнал %s" % CAT, page_icon="🚛", layout="centered")
+        st.markdown(
+            "<style>.stButton>button,.stDownloadButton>button{min-height:3rem;font-size:1.05rem}"
+            ".block-container{padding-top:1.2rem;padding-bottom:2rem}</style>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding-top:1.6rem;margin:0 0 .6rem;overflow:visible">'
+            + TRAILER_SVG +
+            '<h1 style="margin:0;padding:0;line-height:1.15">Журнал испытаний %s</h1></div>' % CAT,
+            unsafe_allow_html=True)
+        st.caption("Прицепы и полуприцепы категории %s%s. Загрузите один или сразу несколько PDF-протоколов — " % (CAT, CAT_NOTE) +
+                   "получите заполненные журналы по шаблону.")
 
     tpl_path = Path(__file__).resolve().parent / TEMPLATE_NAME
     template_bytes = tpl_path.read_bytes() if tpl_path.exists() else None

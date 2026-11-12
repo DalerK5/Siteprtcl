@@ -44,3 +44,7 @@
 ## Категория N2 (грузовые 3,5–12 т)
 
 Отдельное приложение в папке `n2/` (`app.py`, шаблон `template_n2.xlsx`, `requirements.txt`). На Streamlit Cloud — новое приложение, ветка `main`, Main file path: `n2/app.py`. Подробности в `n2/README.md`.
+
+## Все категории в одном приложении
+
+Папка `all/` (`app.py`, `requirements.txt`): выбор категории сверху, ниже — приложение этой категории. На Streamlit Cloud — новое приложение, ветка `main`, Main file path: `all/app.py`. Подробности в `all/README.md`.
