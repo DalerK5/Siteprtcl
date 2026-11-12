@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Общее приложение: все журналы испытаний ТС на одном сайте (M1, M2, M3, N1, N2, N3, O4).
-Сверху — выбор категории (плитки), ниже — приложение этой категории (код и шаблоны берутся из папок
+Сверху — выбор категории, ниже — приложение этой категории (код и шаблоны берутся из папок
 категорий: app.py + template.xlsx, m2/, m2_m3/, n1/, n2/, n3/, o4/ — ничего не дублируется).
+Стиль: чёрный фон с «зерном», белый крупный заголовок, лаймовый акцент, тонкие линии, без скруглений
+(тема — в .streamlit/config.toml, остальное — CSS ниже).
 
 Streamlit Cloud: Main file path  all/app.py
 Ссылка на категорию: …/?cat=N3
@@ -15,17 +17,18 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# код, значок, название, файл приложения
+# код, название, файл приложения
 CATS = [
-    ("M1", "🚗", "Легковые автомобили", "app.py"),
-    ("M2", "🚐", "Автобусы малой вместимости", "m2/app.py"),
-    ("M3", "🚌", "Автобусы", "m2_m3/app.py"),
-    ("N1", "🛻", "Грузовые автомобили", "n1/app.py"),
-    ("N2", "🚚", "Грузовые автомобили", "n2/app.py"),
-    ("N3", "🚛", "Грузовые автомобили", "n3/app.py"),
-    ("O4", "🛞", "Прицепы и полуприцепы", "o4/app.py"),
+    ("M1", "Легковые автомобили", "app.py"),
+    ("M2", "Автобусы малой вместимости", "m2/app.py"),
+    ("M3", "Автобусы", "m2_m3/app.py"),
+    ("N1", "Грузовые автомобили", "n1/app.py"),
+    ("N2", "Грузовые автомобили", "n2/app.py"),
+    ("N3", "Грузовые автомобили", "n3/app.py"),
+    ("O4", "Прицепы и полуприцепы", "o4/app.py"),
 ]
 BY_CODE = {c[0]: c for c in CATS}
+ORDER = [c[0] for c in CATS]
 # состояние, которое нельзя переносить между категориями: результаты и заменённый шаблон
 RESET_KEYS = ("batch", "tpl", "tpl2")
 
@@ -35,7 +38,7 @@ def load_app(code):
     name = "journal_app_%s" % code.lower()
     mod = sys.modules.get(name)
     if mod is None:
-        spec = importlib.util.spec_from_file_location(name, ROOT / BY_CODE[code][3])
+        spec = importlib.util.spec_from_file_location(name, ROOT / BY_CODE[code][2])
         mod = importlib.util.module_from_spec(spec)
         sys.modules[name] = mod
         spec.loader.exec_module(mod)
@@ -50,105 +53,130 @@ def choose(code):
         st.session_state["cat"] = code
 
 
+# «зерно» фона — SVG-шум
+NOISE = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'>"
+         "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/>"
+         "</filter><rect width='100%' height='100%' filter='url(%23n)' opacity='.55'/></svg>")
+
 CSS = """
 <style>
-:root{--a1:#4f46e5;--a2:#7c3aed}
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+:root{--lime:#C6F432;--bg:#0B0B0B;--line:rgba(255,255,255,.14);--mute:rgba(237,237,237,.62)}
+html,body,.stApp,.stApp p,.stApp li,.stApp label,.stApp h1,.stApp h2,.stApp h3,.stApp button,.stApp input,.stApp textarea,
+.stApp small,.stApp div[data-testid="stMarkdownContainer"],.stApp summary{font-family:'Manrope',system-ui,sans-serif!important}
+[data-testid="stIconMaterial"],.material-symbols-rounded{font-family:'Material Symbols Rounded'!important}
+.stApp{background:var(--bg)}
+.stApp:before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.07;background-image:url("%(noise)s")}
+.bigword{position:fixed;left:-2vw;bottom:-7vw;font-weight:800;font-size:30vw;line-height:.8;letter-spacing:-.04em;
+         color:rgba(255,255,255,.035);pointer-events:none;z-index:0;white-space:nowrap;user-select:none}
 [data-testid="stHeader"]{background:transparent}
 [data-testid="stToolbar"],#MainMenu,footer{visibility:hidden}
-[data-testid="stAppViewContainer"]{
-  background:radial-gradient(1100px 520px at 0% -10%,rgba(79,70,229,.10),transparent 60%),
-             radial-gradient(900px 480px at 110% 0%,rgba(6,182,212,.09),transparent 60%)}
-.block-container{padding-top:2.2rem;padding-bottom:3rem;max-width:780px}
+.block-container{position:relative;z-index:1;padding-top:1.4rem;padding-bottom:4rem;max-width:1120px}
+*{border-radius:0!important}
 
-/* шапка */
-.hero{position:relative;overflow:hidden;border-radius:24px;padding:1.5rem 1.4rem 1.35rem;margin:0 0 1.2rem;color:#fff;
-      background:linear-gradient(135deg,var(--a1) 0%,var(--a2) 55%,#db2777 130%);
-      box-shadow:0 14px 34px -14px rgba(79,70,229,.55)}
-.hero:after{content:"";position:absolute;right:-60px;top:-60px;width:220px;height:220px;border-radius:50%;
-      background:rgba(255,255,255,.10)}
-.hero .k{font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;opacity:.8;font-weight:700}
-.hero h1{color:#fff;font-size:clamp(1.45rem,6vw,2rem);line-height:1.15;margin:.25rem 0 0;padding:0;font-weight:800}
-.hero p{margin:.5rem 0 0;opacity:.9;font-size:.98rem;max-width:34rem}
-.hero .row{margin-top:.9rem;font-size:1.45rem;letter-spacing:.35rem;opacity:.95}
+/* верхняя строка */
+.top{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.2rem 0 1.4rem;
+     border-bottom:1px solid var(--line);margin-bottom:2.2rem}
+.logo{display:flex;align-items:stretch;font-weight:800;letter-spacing:.32em;font-size:.82rem;text-transform:uppercase}
+.logo b{background:var(--lime);color:#0B0B0B;padding:.28rem .45rem .28rem .6rem}
+.logo span{padding:.28rem .6rem;color:#fff}
+.top .nav{color:var(--mute);font-size:.88rem;letter-spacing:.04em}
+.top .nav i{font-style:normal;color:var(--lime)}
 
-/* шаги */
-.step{display:flex;align-items:center;gap:.55rem;margin:1rem 0 .5rem;font-weight:700;font-size:1.02rem}
-.step .n{display:inline-flex;align-items:center;justify-content:center;width:1.7rem;height:1.7rem;border-radius:50%;
-         color:#fff;font-size:.9rem;background:linear-gradient(135deg,var(--a1),var(--a2))}
+/* заголовок */
+.hero{display:flex;gap:1.4rem}
+.rail{display:flex;flex-direction:column;align-items:center;gap:.5rem;font-size:.7rem;color:var(--mute);padding-top:.5rem}
+.rail .bar{width:1px;height:7.5rem;background:var(--line);position:relative}
+.rail .bar:before{content:"";position:absolute;left:-1px;top:0;width:3px;height:%(fill)s%%;background:var(--lime)}
+.hero h1{font-weight:800!important;font-size:clamp(2.1rem,6.2vw,4rem)!important;line-height:1.06!important;
+         letter-spacing:-.02em;color:#fff;margin:0;padding:0}
+.hero p{color:var(--mute);font-size:1rem;line-height:1.6;max-width:31rem;margin:1.2rem 0 0}
+.cta{display:flex;align-items:center;gap:1rem;margin-top:1.8rem;font-weight:700;color:#fff;font-size:.95rem}
+.cta:before{content:"";width:3rem;height:1px;background:var(--lime)}
 
-/* плитки категорий */
-.st-key-tiles [data-testid="stHorizontalBlock"]{flex-wrap:wrap;gap:.55rem}
-.st-key-tiles [data-testid="stColumn"]{flex:1 1 calc(25% - .55rem)!important;min-width:calc(25% - .55rem)!important;width:auto!important}
-@media (min-width:700px){.st-key-tiles [data-testid="stColumn"]{flex:1 1 0!important;min-width:0!important}}
-.st-key-tiles button{width:100%;min-height:4.1rem;border-radius:16px;font-weight:700;font-size:1.02rem;
-       border:1px solid rgba(127,127,127,.22);background:rgba(127,127,127,.06);transition:all .15s ease}
-.st-key-tiles button:hover{border-color:var(--a1);transform:translateY(-1px)}
+/* список категорий справа */
+.st-key-cats,.st-key-cats [data-testid="stVerticalBlock"]{gap:.15rem!important}
+.st-key-cats [data-testid="stElementContainer"]{margin:0!important}
+.st-key-cats button{justify-content:flex-start;background:transparent!important;border:0!important;box-shadow:none!important;
+     color:#EDEDED!important;min-height:2.25rem!important;padding:.2rem .6rem;width:fit-content!important;font-weight:500;font-size:.98rem}
+.st-key-cats button:hover{color:var(--lime)!important}
+.st-key-cats button p{font-size:.98rem}
+.st-key-cats [data-testid="stBaseButton-primary"]{background:var(--lime)!important;color:#0B0B0B!important;font-weight:700}
+.st-key-cats [data-testid="stBaseButton-primary"] *,.st-key-cats button[kind="primary"] p{color:#0B0B0B!important}
+.st-key-cats [data-testid="stButton"]{width:fit-content}
 
-/* выбранная категория */
-.cat{display:flex;align-items:center;gap:.8rem;border-radius:18px;padding:.8rem 1rem;margin:.9rem 0 .2rem;
-     border:1px solid rgba(127,127,127,.2);background:rgba(127,127,127,.05)}
-.cat .ic{font-size:2.1rem;line-height:1}
-.cat .ic svg{width:3.4rem;height:auto}
-.cat .code{display:inline-block;font-weight:800;font-size:.85rem;padding:.12rem .55rem;border-radius:999px;color:#fff;
-     background:linear-gradient(135deg,var(--a1),var(--a2));margin-right:.45rem}
-.cat .t{font-weight:700;font-size:1.12rem}
+/* раздел */
+.sec{display:flex;align-items:baseline;gap:1rem;margin:3rem 0 1rem;padding-top:1.4rem;border-top:1px solid var(--line)}
+.sec .no{color:var(--lime);font-size:.8rem;font-weight:700;letter-spacing:.12em}
+.sec .t{font-size:1.5rem;font-weight:800;color:#fff;letter-spacing:-.01em}
+.sec .c{margin-left:auto;color:var(--mute);font-size:.9rem}
+.sec .c b{color:#0B0B0B;background:var(--lime);padding:.08rem .4rem;margin-right:.45rem}
+.st-key-body{max-width:780px}
 
 /* элементы приложения категории */
-.stButton>button,.stDownloadButton>button{min-height:3.1rem;font-size:1.04rem;border-radius:14px}
-[data-testid="stBaseButton-primary"]{border:0!important;color:#fff!important;
-     background:linear-gradient(135deg,var(--a1),var(--a2))!important;box-shadow:0 10px 22px -12px rgba(79,70,229,.9)}
+.stButton>button,.stDownloadButton>button{min-height:3.1rem;font-size:1rem;font-weight:700}
+[data-testid="stBaseButton-primary"]{background:var(--lime)!important;border:1px solid var(--lime)!important;color:#0B0B0B!important}
+[data-testid="stBaseButton-primary"] *,button[kind="primary"] p,.stDownloadButton button[kind="primary"] p{color:#0B0B0B!important}
 [data-testid="stBaseButton-primary"]:hover{filter:brightness(1.08)}
-[data-testid="stBaseButton-primary"]:disabled{background:rgba(127,127,127,.18)!important;box-shadow:none;
-     color:rgba(127,127,127,.9)!important}
-[data-testid="stFileUploaderDropzone"]{border:2px dashed rgba(79,70,229,.45);border-radius:18px;background:rgba(79,70,229,.05)}
-[data-testid="stExpander"] details{border-radius:14px}
-[data-testid="stAlert"]{border-radius:14px}
+[data-testid="stBaseButton-primary"]:disabled{background:transparent!important;border:1px solid var(--line)!important}
+[data-testid="stBaseButton-primary"]:disabled *{color:var(--mute)!important}
+[data-testid="stBaseButton-secondary"]{background:transparent!important;border:1px solid var(--line)!important;color:#EDEDED!important}
+[data-testid="stBaseButton-secondary"]:hover{border-color:var(--lime)!important;color:var(--lime)!important}
+[data-testid="stFileUploaderDropzone"]{background:rgba(255,255,255,.025);border:1px dashed rgba(198,244,50,.45)}
+[data-testid="stExpander"] details{border:1px solid var(--line);background:transparent}
+[data-testid="stAlert"]{background:rgba(255,255,255,.03);border:1px solid var(--line)}
+[data-testid="stMetricValue"]{color:var(--lime)}
+hr{border-color:var(--line)!important}
+@media (max-width:640px){.rail{display:none}.top .nav{display:none}.sec .c{display:none}}
 </style>
 """
 
 
 def main():
-    st.set_page_config(page_title="Журналы испытаний ТС", page_icon="📋", layout="centered")
-    st.markdown(CSS, unsafe_allow_html=True)
+    st.set_page_config(page_title="Журналы испытаний ТС", page_icon="📋", layout="wide")
 
     # выбранная категория: из ссылки (?cat=N3) или прошлый выбор
     if st.session_state.get("cat") not in BY_CODE:
         q = str(st.query_params.get("cat", "")).upper()
         st.session_state["cat"] = q if q in BY_CODE else "M1"
-
-    st.markdown(
-        '<div class="hero"><div class="k">Сертификационные испытания</div>'
-        "<h1>Журналы испытаний ТС</h1>"
-        "<p>Выберите категорию, загрузите PDF-протоколы — журналы заполнятся по шаблону автоматически.</p>"
-        '<div class="row">%s</div></div>' % "".join(c[1] for c in CATS),
-        unsafe_allow_html=True)
-
-    st.markdown('<div class="step"><span class="n">1</span>Категория ТС</div>', unsafe_allow_html=True)
     cur = st.session_state["cat"]
-    with st.container(key="tiles"):
-        cols = st.columns(len(CATS))
-        for col, (code, icon, _, _) in zip(cols, CATS):
-            col.button("%s %s" % (icon, code), key="tile_" + code, on_click=choose, args=(code,),
-                       type="primary" if code == cur else "secondary", use_container_width=True)
+    idx = ORDER.index(cur) + 1
+
+    st.markdown(CSS % {"noise": NOISE, "fill": round(idx / len(ORDER) * 100)}, unsafe_allow_html=True)
+    st.markdown('<div class="bigword">ЖУРНАЛ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="top"><div class="logo"><b>ЖУРНАЛЫ</b><span>ИСПЫТАНИЙ</span></div>'
+                '<div class="nav">Категория <i>%s</i> · M1 — O4</div></div>' % cur, unsafe_allow_html=True)
+
+    left, right = st.columns([1.55, 1], gap="large")
+    with left:
+        st.markdown(
+            '<div class="hero"><div class="rail">%02d<div class="bar"></div>%02d</div><div>'
+            "<h1>Журналы<br>испытаний ТС</h1>"
+            "<p>Автоматическое заполнение рабочих журналов по PDF-протоколам испытаний: "
+            "средние значения, неопределённость и нормы — как в протоколе.</p>"
+            '<div class="cta">Выберите категорию и загрузите протоколы</div></div></div>'
+            % (idx, len(ORDER)), unsafe_allow_html=True)
+    with right:
+        with st.container(key="cats"):
+            for code, title, _ in CATS:
+                st.button("%s  ·  %s" % (code, title), key="cat_" + code, on_click=choose, args=(code,),
+                          type="primary" if code == cur else "secondary")
     if st.query_params.get("cat") != cur:
         st.query_params["cat"] = cur
 
-    code, icon, title, _ = BY_CODE[cur]
+    code, title, _ = BY_CODE[cur]
     app = load_app(code)
-    pic = getattr(app, "TRAILER_SVG", None) if code == "O4" else None
-    st.markdown('<div class="cat"><div class="ic">%s</div><div class="t"><span class="code">%s</span>%s</div></div>'
-                % (pic or icon, code, title), unsafe_allow_html=True)
-
-    st.markdown('<div class="step"><span class="n">2</span>Протоколы и журналы</div>', unsafe_allow_html=True)
-    app.main(embedded=True)
-
-    st.write("")
-    with st.expander("📱 Установить на телефон или компьютер"):
-        st.markdown(
-            "- **iPhone:** открыть сайт в Safari → «Поделиться» → «На экран Домой».\n"
-            "- **Android:** Chrome → меню ⋮ → «Добавить на главный экран».\n"
-            "- **Компьютер:** Chrome/Edge → значок установки в адресной строке.\n\n"
-            "Ссылка сразу на категорию: в конце адреса `?cat=N3` (M1, M2, M3, N1, N2, N3, O4).")
+    st.markdown('<div class="sec"><span class="no">%02d</span><span class="t">Протоколы и журналы</span>'
+                '<span class="c"><b>%s</b>%s</span></div>' % (idx, code, title), unsafe_allow_html=True)
+    with st.container(key="body"):
+        app.main(embedded=True)
+        st.write("")
+        with st.expander("Установить на телефон или компьютер"):
+            st.markdown(
+                "- **iPhone:** открыть сайт в Safari → «Поделиться» → «На экран Домой».\n"
+                "- **Android:** Chrome → меню ⋮ → «Добавить на главный экран».\n"
+                "- **Компьютер:** Chrome/Edge → значок установки в адресной строке.\n\n"
+                "Ссылка сразу на категорию: в конце адреса `?cat=N3` (M1, M2, M3, N1, N2, N3, O4).")
 
 
 main()
