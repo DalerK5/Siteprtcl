@@ -191,6 +191,47 @@ def clean_brand(b):
     return b.strip(" ,.;-") or b
 
 
+# Форматы «Sinov obyekti», найденные в протоколах N3 (19.11.2026): (шаблон, номер группы марки, номер группы модели)
+BRAND_EXTRA = [
+    # «марки SINOTRUK HOWO, тип ZZ3257, модификации ZZ3257N414GB1:»
+    (r"марки\s+([A-ZА-Я][\w\-]*(?:\s+[A-ZА-Я][\w\-]*)?)\s*,\s*тип\s+[\w\-]+\s*,\s*модификации\s+([\w\-]+)", 1, 2),
+    # «АВТОКРАН МАРКИ: ZOOMLION, МОДЕЛЬ: ZTC550H, МОДЕЛЬ ШАССИ: …»
+    (r"МАРКИ:\s*([^,]+?)\s*,\s*МОДЕЛЬ:\s*([^,]+?)\s*,", 1, 2),
+    # «Грузавик … на базе Dongfeng; Модель: EQ1125SJ8CDC кат N3»
+    (r"на базе\s+([A-Z][A-Za-z\-]+)\s*;\s*Модель:\s*([\w\-]+)", 1, 2),
+    # «BKN brendli avtoburgulovchi model: BKN BUR20, shassi»
+    (r"([A-Za-z][\w\-]*)\s+brendli\s+\S+\s+model:\s*([^,]+?)\s*,", 1, 2),
+    # «Автокран XCMG модель XZJ5431JQZ50K, QY50K5C_3»
+    (r"[Аа]втокран\s+([A-Z][\w\-]+)\s+модель\s+([\w\-]+)", 1, 2),
+    # «автовышка марки SKY450-N9A1, на базе шасси DAEWOO NOVUS» — марка шасси, модель машины
+    (r"марки\s+([\w\-]+)\s*,\s*на базе шасси\s+([A-ZА-Я][\w\-]+)", 2, 1),
+    # «Пожарный автомобиль на шасси КАМАЗ 43253, модель АЦ 4,0-40, категория N3»
+    (r"на шасси\s+([А-ЯA-Z][А-ЯA-Z\-]+)\s+[\w\-]+\s*,\s*модель\s+(.+?)\s*,\s*категори", 1, 2),
+    # «Тягач седельный … марки Mercedes-Benz Actros 1845 LS , VIN»
+    (r"марки\s+([A-Z][\w\-]+)\s+([A-Za-z][\w\- .]+?)\s*,\s*VIN", 1, 2),
+    # «Автоцистерна … на базе шасси MAN TGS 41.400 8х4 BB, N3.»
+    (r"на базе шасси\s+([A-Z]{2,})\s+(.+?)\s*,\s*[MNO]\d\b", 1, 2),
+]
+
+
+def brand_extra(flat):
+    """Марка/модель из описания объекта испытаний («Sinov obyekti: …») по форматам BRAND_EXTRA."""
+    m = re.search(r"Sinov obyekti:\s*(.{0,400}?)\s*Buyurtmachi", flat)
+    obj = m.group(1) if m else flat[:3000]
+    for pat, gb, gm in BRAND_EXTRA:
+        m = re.search(pat, obj)
+        if m:
+            return m.group(gb).strip(" ,.;:"), m.group(gm).strip(" ,.;:")
+    return None
+
+
+def obj_category(flat):
+    """Категория из описания объекта («…, N3.», «кат N3», «N3-категория»), если обычные шаблоны не сработали."""
+    m = re.search(r"Sinov obyekti:\s*(.{0,400}?)\s*Buyurtmachi", flat)
+    m = re.search(r"(?<![\w\-])([MМNНOО])([1234])G?(?![\w])", m.group(1)) if m else None
+    return ({"M": "M", "М": "M", "N": "N", "Н": "N", "O": "O", "О": "O"}[m.group(1)] + m.group(2)) if m else ""
+
+
 def parse_meta(raw):
     flat = norm(raw)
     # «Mодели» (латинская M) -> «Модели»: латинский двойник перед русскими строчными
@@ -208,6 +249,10 @@ def parse_meta(raw):
     if m and not meta["brand"]:
         meta["brand"] = m.group(2).strip()
         meta["model"] = meta["model"] or m.group(1).strip(" ,.;")
+    if not meta["brand"] or not meta["model"]:
+        bm = brand_extra(flat)
+        if bm:
+            meta["brand"], meta["model"] = bm
     if not meta["brand"] or not meta["model"]:
         pats = [
             # «марки DONGFENG модели EII008,»
@@ -251,6 +296,11 @@ def parse_meta(raw):
     m = (re.search(r"\b([MМNН])([123])\s*(?:toifa|kategoriya)", flat)
          or re.search(r"категори[яи][^)]{0,40}?\b([MМNН])([123])\b", flat, re.I))
     meta["category"] = ("M" if m.group(1) in "MМ" else "N") + m.group(2) if m else ""
+    if not meta["category"]:
+        meta["category"] = obj_category(flat)
+    # хвост описания в модели: «AK5250GPSZZ6 категории N3 Экологический класс Евро 6 (»
+    meta["model"] = re.split(r"\s*(?:\(|\bкатегори|\bкат\.?\s|\bэкологическ|\bЕвро\b)", meta["model"], 1, flags=re.I)[0]
+    meta["model"] = meta["model"].strip(" ,.;:(")
     meta["brand"] = clean_brand(meta["brand"]) if meta["brand"] else ""
     vins = []
     for mm in re.finditer(r"(?:VIN|идент\.?|идентификационный)[^A-Z0-9]{0,25}((?:[A-HJ-NPR-Z0-9]{17}[\s,;]*)+)", flat):
@@ -379,6 +429,10 @@ def parse_params(raw):
         if re.fullmatch(r"0*", name.strip()) and all(to_dec(r["final"]) == 0 for r in rows
                                                      if re.fullmatch(r"-?[\d.,]+", r["final"] or "")):
             continue                              # пустая заготовка протокола: «nomi 0», «0 (T)», «0 T»
+        if "такрор" in block.lower() and all(
+                re.fullmatch(r"0+(?:[.,]0*)?", (r["final"] or "").strip()) and
+                re.fullmatch(r"0+(?:[.,]0*)?", (r["meas"] or "").strip()) for r in rows):
+            continue                              # «Izoh: такрорий» (повторное) с нулями — замера нет (1740284)
         params.append({"section": fold(section), "name": name, "raw_l": name.lower(),
                        "name_f": fold(name), "rows": rows, "req": req,
                        "req_raw": norm(mr.group(1)) if mr else ""})
@@ -950,7 +1004,8 @@ def map_params(params):
             unmatched.append(p)                       # «Длина ТС не более … 0 m» — пустая заготовка протокола
             trace.append((p, None))
             continue
-        if key in DIM_KEYS and (unit in ("mm", "мм") or v >= 100):
+        if key in DIM_KEYS and v >= 100:
+            # габариты в mm (≥ 100) → m; «13,15 mm» (< 100) — опечатка в единице: значение уже в m (1739579)
             # «8940 m, U 0,003 m» — опечатка в единице значения: значение в mm, а U уже в m
             if unc is not None and unit in ("mm", "мм") and unc >= D("0.05"):   # «15850 mm, U 0,003» — U уже в m
                 unc, unc_dp = unc / 1000, unc_dp + 3
