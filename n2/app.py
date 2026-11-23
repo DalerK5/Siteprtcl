@@ -195,7 +195,7 @@ def clean_brand(b):
 # Форматы «Sinov obyekti», найденные в протоколах N3 (19.11.2026): (шаблон, номер группы марки, номер группы модели)
 BRAND_EXTRA = [
     # «марки SINOTRUK HOWO, тип ZZ3257, модификации ZZ3257N414GB1:»
-    (r"марки\s+([A-ZА-Я][\w\-]*(?:\s+[A-ZА-Я][\w\-]*)?)\s*,\s*тип\s+[\w\-]+\s*,\s*модификации\s+([\w\-]+)", 1, 2),
+    (r"марки\s+([A-ZА-Я][\w\-]*(?:\s+[A-ZА-Я][\w\-]*)?)\s*,\s*типа?\s+[\w\- ]+?\s*,\s*модификации\s+([\w\-]+)", 1, 2),
     # «АВТОКРАН МАРКИ: ZOOMLION, МОДЕЛЬ: ZTC550H, МОДЕЛЬ ШАССИ: …»
     (r"МАРКИ:\s*([^,]+?)\s*,\s*МОДЕЛЬ:\s*([^,]+?)\s*,", 1, 2),
     # «Грузавик … на базе Dongfeng; Модель: EQ1125SJ8CDC кат N3»
@@ -212,6 +212,10 @@ BRAND_EXTRA = [
     (r"марки\s+([A-Z][\w\-]+)\s+([A-Za-z][\w\- .]+?)\s*,\s*VIN", 1, 2),
     # «Автоцистерна … на базе шасси MAN TGS 41.400 8х4 BB, N3.»
     (r"на базе шасси\s+([A-Z]{2,})\s+(.+?)\s*,\s*[MNO]\d\b", 1, 2),
+    # «Специальный автомобиль для распыления воды HOWO Модель KLF5120GPSZ6 2026 года выпуска;»
+    (r"([A-Z][A-Za-z\-]+)\s+Модель:?\s*([\w\-]+)", 1, 2),
+    # «Ассенизатор- 3 м3 на шасси KRANTAS 1055 4х2, Зав №…»
+    (r"на шасси\s+([A-Z]{2,}[A-Za-z\-]*)\s+([^,;(.]+?)\s*[,;(]", 1, 2),
 ]
 
 
@@ -315,8 +319,18 @@ def parse_meta(raw):
     meta["category"] = ({"M": "M", "М": "M", "N": "N", "Н": "N", "O": "O", "О": "O"}[m.group(1)] + m.group(2)) if m else ""
     if not meta["category"]:
         meta["category"] = obj_category(flat)
+    obj = re.search(r"Sinov obyekti:\s*(.{0,400}?)\s*Buyurtmachi", flat)
+    obj = obj.group(1) if obj else ""
+    if not meta["model"]:                     # только модель: «модель EXQ9408Z- RU-WZ 2026г.вып.», «Модель: LHL9380GFG,»
+        mm = re.search(r"\b[Мм]одел[ьи]\s*:?\s*([A-Z0-9][A-Za-z0-9]*(?:\s*-\s*[A-Za-z0-9]+)*)", obj)
+        if mm:
+            meta["model"] = re.sub(r"\s*-\s*", "-", mm.group(1))
+    if not meta["brand"]:                     # только марка: «марка LUYI, VIN»
+        mm = re.search(r"\b[Мм]арк[аи]\s*:?\s+([A-Z][\w\-]*(?:\s+[A-Z][\w\-]*)?)\s*,\s*VIN", obj)
+        if mm:
+            meta["brand"] = mm.group(1)
     # хвост описания в модели: «AK5250GPSZZ6 категории N3 Экологический класс Евро 6 (»
-    meta["model"] = re.split(r"\s*(?:\(|\bкатегори|\bкат\.?\s|\bэкологическ|\bЕвро\b)", meta["model"], 1, flags=re.I)[0]
+    meta["model"] = re.split(r"\s*(?:\(|\bкатегори|\bкат\.?\s|\bэкологическ|\bЕвро\b|\b(?:19|20)\d\d\s*(?:года|г\.))", meta["model"], 1, flags=re.I)[0]
     meta["model"] = meta["model"].strip(" ,.;:(")
     meta["brand"] = clean_brand(meta["brand"]) if meta["brand"] else ""
     meta["model"] = meta["model"].strip(" ,.;(")            # «ZZ1158G4215C1 (Vin № …»
