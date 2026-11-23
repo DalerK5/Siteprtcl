@@ -1739,8 +1739,10 @@ def problems(meta, log):
         res.append("нераспознанные пункты")
     if not log["filled"]:
         res.append("нет пунктов для журнала")
-    if not meta["brand"] or not meta["model"]:
-        res.append("нет марки/модели")
+    if not meta["brand"]:
+        res.append("нет марки")
+    elif not meta["model"]:
+        res.append("модификации в протоколе нет")
     if not meta["vin"]:
         res.append("в протоколе нет VIN")
     if log["notes"]:
@@ -1869,8 +1871,10 @@ def show_details(meta, log):
     if not log["filled"]:
         st.error("В протоколе нет ни одного пункта, для которого есть место в журнале M1 — заполнять нечего. "
                  "Пункты протокола: " + "; ".join(x[:80] for x in log["unmatched"]))
-    if not meta["brand"] or not meta["model"]:
-        st.warning("Марка/модель не распознаны — впишите вручную (E11, E12).")
+    if not meta["brand"]:
+        st.warning("Марка не распознана — впишите вручную (E11).")
+    elif not meta["model"]:
+        st.info("Модификации (модели) в протоколе нет — в журнале оставлена пустой.")
     if not meta["vin"]:
         st.info("В протоколе нет VIN (например, испытывался тип ТС) — ячейка E15 оставлена пустой.")
 

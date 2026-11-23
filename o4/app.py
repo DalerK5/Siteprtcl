@@ -2379,8 +2379,10 @@ def problems(meta, log):
         res.append("нет пунктов для журнала")
     if meta.get("category") and meta["category"] != CAT:
         res.append("категория в протоколе %s, а журнал %s" % (meta["category"], CAT))
-    if not meta["brand"] or not meta["model"]:
-        res.append("нет марки/модели")
+    if not meta["brand"]:
+        res.append("нет марки")
+    elif not meta["model"]:
+        res.append("модификации в протоколе нет")
     if not meta["vin"]:
         res.append("в протоколе нет VIN")
     if log["notes"]:
@@ -2561,8 +2563,10 @@ def show_details(meta, log):
     if meta.get("category") and meta["category"] != CAT:
         st.error("В протоколе категория %s, а это журнал %s — проверьте, тот ли шаблон (приложение) выбран."
                  % (meta["category"], CAT))
-    if not meta["brand"] or not meta["model"]:
-        st.warning("Марка/модель не распознаны — впишите вручную (НЕОПРЕДЕЛ!D10, D11).")
+    if not meta["brand"]:
+        st.warning("Марка не распознана — впишите вручную (НЕОПРЕДЕЛ!D9).")
+    elif not meta["model"]:
+        st.info("Модификации (модели) в протоколе нет — в журнале оставлена пустой.")
     if not meta["vin"]:
         st.info("В протоколе нет VIN — ячейка D14 оставлена пустой.")
 
