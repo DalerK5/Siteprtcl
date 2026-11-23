@@ -298,6 +298,16 @@ def parse_meta(raw):
     meta["category"] = ("M" if m.group(1) in "MМ" else "N") + m.group(2) if m else ""
     if not meta["category"]:
         meta["category"] = obj_category(flat)
+    obj = re.search(r"Sinov obyekti:\s*(.{0,400}?)\s*Buyurtmachi", flat)
+    obj = obj.group(1) if obj else ""
+    if not meta["model"]:                     # только модель: «модель EXQ9408Z- RU-WZ 2026г.вып.», «Модель: LHL9380GFG,»
+        mm = re.search(r"\b[Мм]одел[ьи]\s*:?\s*([A-Z0-9][A-Za-z0-9]*(?:\s*-\s*[A-Za-z0-9]+)*)", obj)
+        if mm:
+            meta["model"] = re.sub(r"\s*-\s*", "-", mm.group(1))
+    if not meta["brand"]:                     # только марка: «марка LUYI, VIN»
+        mm = re.search(r"\b[Мм]арк[аи]\s*:?\s+([A-Z][\w\-]*(?:\s+[A-Z][\w\-]*)?)\s*,\s*VIN", obj)
+        if mm:
+            meta["brand"] = mm.group(1)
     # хвост описания в модели: «AK5250GPSZZ6 категории N3 Экологический класс Евро 6 (»
     meta["model"] = re.split(r"\s*(?:\(|\bкатегори|\bкат\.?\s|\bэкологическ|\bЕвро\b|\b(?:19|20)\d\d\s*(?:года|г\.))", meta["model"], 1, flags=re.I)[0]
     meta["model"] = meta["model"].strip(" ,.;:(")
