@@ -2266,7 +2266,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
         if want is None:
             if why:
                 log["proto_contra"].append("%s: %s" % (blocks[key][0], why))
-                log["contra_by"].append((values[key]["name"], why))
+                log["contra_by"].append((disp_name(values[key]["name"], blocks[key][0]), why))
             continue
         if want == old:
             continue
@@ -2344,7 +2344,7 @@ def fill_workbook(template_bytes, meta, values, mode="corr"):
             nv = allc.get(nc[0], {}).get(nc[1]) if nc else None
             norm_s = ("%s %s" % ("≥" if nc[2] == "ge" else "≤", fmt(D(repr(nv))))
                       if isinstance(nv, (int, float)) and not isinstance(nv, bool) else "")
-            log["ppr_low"].append((values[key]["name"], label, val, norm_s, r[1]))
+            log["ppr_low"].append((disp_name(values[key]["name"], label), label, val, norm_s, r[1]))
     except Exception:  # noqa: BLE001
         log["calc"] = False
         for n, p in paths:
@@ -2394,8 +2394,16 @@ def process(pdf_bytes, template_bytes, mode="corr", file_id=""):
     log["params"] = len(params)
     log["nonconf"] = [p["name"] for p in params if any(r["concl"] != "M" for r in p["rows"])]
     log["notes"] = [(v["name"], n) for v in values.values() for n in v["notes"]]
+    log["disp"] = {id(p): disp_name(p["name"], LAYOUT[k][0]) for p, k in trace if k in LAYOUT}
     log["proto_errors"], log["proto_border"] = protocol_errors(params, log)
     return data, meta, log
+
+
+def disp_name(name, label):
+    """Короткое название пункта протокола («высота», «ширина») → подпись строки журнала, чтобы было понятно, что это."""
+    if label and len((name or "").strip()) < 30:
+        return "%s (в протоколе: «%s»)" % (label, (name or "").strip())
+    return name
 
 
 def protocol_errors(params, log):
@@ -2407,8 +2415,10 @@ def protocol_errors(params, log):
         if why not in lst:
             lst.append(why)
 
+    disp = log.get("disp", {})
     for p in params:
         req_s = (p.get("req_raw") or "").strip()
+        pname = disp.get(id(p), p["name"])
         for r in p["rows"]:
             try:
                 v = row_value(r, p["req"])[0]
@@ -2416,23 +2426,23 @@ def protocol_errors(params, log):
                 v = None
             if v is not None and in_req(v, p["req"]) is False \
                     and not any(in_req(v * k, p["req"]) for k in (D("0.001"), D("1000"))):   # m ↔ mm — не ошибка
-                add(p["name"], "значение %s не укладывается в требование протокола «%s»%s" % (
+                add(pname, "значение %s не укладывается в требование протокола «%s»%s" % (
                     fmt(v), req_s[:90], ", а вывод «M»" if r["concl"] == "M" else ""))
             if r["concl"] != "M":
-                add(p["name"], "вывод протокола «%s» — несоответствие" % r["concl"])
+                add(pname, "вывод протокола «%s» — несоответствие" % r["concl"])
             try:
                 m, f = to_dec(r["meas"]), to_dec(r["final"])
             except (ValueError, InvalidOperation):
                 m = f = None
             if m is not None and f is not None and m != f and m * 1000 != f and f * 1000 != m:
-                add(p["name"], "измерено «%s», а в итоге «%s» — разные числа" % (r["meas"], r["final"]))
+                add(pname, "измерено «%s», а в итоге «%s» — разные числа" % (r["meas"], r["final"]))
             if v and r.get("unc"):
                 try:
                     u = to_dec(r["unc"])
                 except (ValueError, InvalidOperation):
                     u = None
                 if u is not None and u >= abs(v):
-                    add(p["name"], "неопределённость U = %s не меньше самого значения %s — вероятно, опечатка"
+                    add(pname, "неопределённость U = %s не меньше самого значения %s — вероятно, опечатка"
                         % (r["unc"], fmt(v)))
     for name, why in log.get("contra_by", []):
         if name not in errs:
@@ -2449,7 +2459,7 @@ def protocol_errors(params, log):
                 fmt(val), norm_s or "журнала", pct))
     order = {}
     for i, p in enumerate(params):
-        order.setdefault(p["name"], i)
+        order.setdefault(disp.get(id(p), p["name"]), i)
     key = lambda kv: order.get(kv[0], 10 ** 6)  # noqa: E731
     return sorted(errs.items(), key=key), sorted(border.items(), key=key)
 
